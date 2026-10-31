@@ -162,6 +162,26 @@ $t->check( 'EUR with $KTA is flagged', ! Keeta_Checkout_Amount::currency_matches
 // An unknown store currency cannot be checked, so it is not flagged.
 $t->check( 'an unknown currency is not flagged', Keeta_Checkout_Amount::currency_matches_token( 'XYZ', '$USDC' ) );
 
+// Comparing what WooCommerce asked for with what the server says it requested.
+// WooCommerce writes 12.50; the server, which strips trailing zeros, says 12.5.
+$t->check( 'equal: 12.50 is 12.5', Keeta_Checkout_Amount::equal( '12.50', '12.5' ) );
+$t->check( 'equal: 7.00 is 7', Keeta_Checkout_Amount::equal( '7.00', '7' ) );
+$t->check( 'equal: 0.01 is 0.010', Keeta_Checkout_Amount::equal( '0.01', '0.010' ) );
+$t->check( 'equal: 007.5 is 7.5', Keeta_Checkout_Amount::equal( '007.5', '7.5' ) );
+$t->check( 'equal: .5 is 0.5', Keeta_Checkout_Amount::equal( '.5', '0.5' ) );
+$t->check( 'equal: 12.50 is not 12.51', ! Keeta_Checkout_Amount::equal( '12.50', '12.51' ) );
+$t->check( 'equal: 12.5 is not 125', ! Keeta_Checkout_Amount::equal( '12.5', '125' ) );
+$t->check( 'equal: 10 is not 1', ! Keeta_Checkout_Amount::equal( '10', '1' ) );
+$t->check( 'equal: 1.0 is not 1.00000000000000000001', ! Keeta_Checkout_Amount::equal( '1.0', '1.00000000000000000001' ) );
+$t->check( 'equal: an empty string matches nothing', ! Keeta_Checkout_Amount::equal( '', '' ) );
+$t->check( 'equal: a bare dot matches nothing', ! Keeta_Checkout_Amount::equal( '.', '0' ) );
+$t->check( 'equal: a negative is not a plain decimal', ! Keeta_Checkout_Amount::equal( '-1', '-1' ) );
+$t->check( 'equal: a float with an exponent is refused', ! Keeta_Checkout_Amount::equal( '1e2', '100' ) );
+
+$t->check( 'same_token: $USDC is usdc', Keeta_Checkout_Amount::same_token( '$USDC', 'usdc' ) );
+$t->check( 'same_token: KTA is $KTA', Keeta_Checkout_Amount::same_token( 'KTA', '$KTA' ) );
+$t->check( 'same_token: $USDC is not $USDT', ! Keeta_Checkout_Amount::same_token( '$USDC', '$USDT' ) );
+
 /* -------------------------------------------------------------- signature -- */
 
 $secret = 'whsec_test_000000000000';

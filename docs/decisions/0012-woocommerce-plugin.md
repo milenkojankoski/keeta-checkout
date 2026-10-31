@@ -21,8 +21,12 @@ prerequisite.
    pay page already handles the QR, the deep link, the live status and the
    copy-the-details fallback, and it works with JavaScript off. Reimplementing that
    inside a WooCommerce checkout would be worse and would need maintaining twice.
-2. The order moves to `on-hold`, not `pending`, because the customer has committed
-   to a payment method and the stock should be held while they pay.
+2. The order stays `pending`. This decision originally moved it to `on-hold`, on the
+   reasoning that the customer had committed to a payment method. That broke the pay
+   page's own cancel button: WooCommerce lets a shopper cancel only `pending` and
+   `failed` orders, so the shopper was told their order "can no longer be cancelled"
+   and left waiting for the webhook to do it. Reversed in the re-review recorded in
+   0013. Pending is also what the stock hold and the unpaid-order cleanup key on.
 
 **The browser never confirms a payment**
 
@@ -113,7 +117,7 @@ A complete payment went through it:
 | Step | Result |
 | --- | --- |
 | gateway registration | `WC_Gateway_Keeta_Checkout`, available, configured |
-| `process_payment()` | created a session, order moved to `on-hold` |
+| `process_payment()` | created a session, order left `pending` |
 | the redirect | `http://localhost:3000/pay/cs_…` |
 | a real send on the test network | 0.01 KTA from the dev payer wallet |
 | the webhook | delivered on the first attempt, HTTP 200 |
@@ -179,7 +183,7 @@ a shopper presses the order button:
 | | |
 | --- | --- |
 | HTTP status | 200 |
-| order | `on-hold`, session id stored |
+| order | `pending`, session id stored |
 | `payment_result.payment_status` | `success` |
 | `payment_result.redirect_url` | `http://localhost:3000/pay/cs_…` |
 

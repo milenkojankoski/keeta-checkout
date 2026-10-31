@@ -158,16 +158,31 @@ class Keeta_Checkout_Webhook {
 	): void {
 		$status = (string) ( $session['status'] ?? '' );
 
+		$current = (string) $order->get_meta( WC_Gateway_Keeta_Checkout::SESSION_META );
+
 		switch ( $event_type ) {
 			case 'checkout.session.paid':
-				self::complete( $order, $session );
+				// The type says paid; the session must say so too. Rule 3 above, and
+				// a cheap second lock on the one event that moves an order forward.
+				if ( 'paid' === $status ) {
+					self::complete( $order, $session );
+				}
 				break;
 
 			case 'checkout.session.expired':
 			case 'checkout.session.cancelled':
-				// Only if it is still awaiting payment. A late `expired` for an
-				// order already paid by another route must not cancel it.
-				if ( ! $order->is_paid() ) {
+				// Three things must all be true before an order is cancelled for a
+				// request that went unpaid: the request is the one the order
+				// currently points at (an older, superseded one expiring says
+				// nothing about the newer one), the shopper has not since switched
+				// to another payment method, and the order is still waiting.
+				if ( $current !== (string) ( $session['id'] ?? '' ) ) {
+					break;
+				}
+				if ( WC_Gateway_Keeta_Checkout::ID !== $order->get_payment_method() ) {
+					break;
+				}
+				if ( ! $order->is_paid() && $order->has_status( array( 'pending', 'on-hold', 'failed' ) ) ) {
 					$order->update_status(
 						'cancelled',
 						sprintf(
@@ -228,8 +243,50 @@ class Keeta_Checkout_Webhook {
 	 */
 	public static function complete( WC_Order $order, array $session ): void {
 		$block_hash = (string) ( $session['blockHash'] ?? '' );
+		$session_id = (string) ( $session['id'] ?? '' );
 
 		if ( $order->is_paid() ) {
+			// Paid already. If this is a different block, the shopper has paid twice
+			// (two requests for one order, both settled) and one of them must go back.
+			if ( '' !== $block_hash && $block_hash !== (string) $order->get_transaction_id() ) {
+				$order->add_order_note(
+					sprintf(
+						/* translators: 1: session id, 2: amount, 3: token, 4: explorer URL. */
+						__( 'A second Keeta payment settled for this order (session %1$s): %2$s %3$s. The customer paid twice; refund one. %4$s', 'keeta-checkout' ),
+						$session_id,
+						(string) ( $session['amountDecimal'] ?? '?' ),
+						(string) ( $session['tokenTicker'] ?? '' ),
+						(string) ( $session['explorerUrl'] ?? '' )
+					)
+				);
+				$order->save();
+			}
+			return;
+		}
+
+		// The request was priced from the order total when it was created. If the
+		// total has changed since (an edit in the admin, a coupon, a superseded
+		// request that could not be cancelled), the old amount is not payment in
+		// full, and the order waits for a person rather than completing.
+		$requested = (string) ( $session['amountDecimal'] ?? '' );
+		try {
+			$total = Keeta_Checkout_Amount::normalise( $order->get_total() );
+		} catch ( Keeta_Checkout_Amount_Exception $error ) {
+			$total = '';
+		}
+		if ( '' === $requested || '' === $total || ! Keeta_Checkout_Amount::equal( $requested, $total ) ) {
+			$order->update_status(
+				'on-hold',
+				sprintf(
+					/* translators: 1: paid amount, 2: token, 3: order total, 4: session id, 5: explorer URL. */
+					__( 'A Keeta payment of %1$s %2$s settled, but the order total is now %3$s (session %4$s). Not marked paid; please review. %5$s', 'keeta-checkout' ),
+					$requested,
+					(string) ( $session['tokenTicker'] ?? '' ),
+					$total,
+					$session_id,
+					(string) ( $session['explorerUrl'] ?? '' )
+				)
+			);
 			return;
 		}
 
@@ -263,9 +320,12 @@ class Keeta_Checkout_Webhook {
 	/**
 	 * Find the order an event is about.
 	 *
-	 * The order id is matched first, then the stored session id is checked, so a
-	 * forged `orderId` on a correctly signed event for a different session cannot
-	 * complete the wrong order.
+	 * The order id names the candidate; the session id has to be one the order
+	 * actually created. Any of them, not only the current one: a request the order
+	 * no longer points at can still be paid by a shopper who kept the first tab
+	 * open, and that payment is this order's money. An order with no Keeta session
+	 * at all is never matched, however it is named, so a signed event can never
+	 * touch an order that went through another gateway.
 	 *
 	 * @param array<string,mixed> $session The session view.
 	 * @return WC_Order|null
@@ -274,7 +334,7 @@ class Keeta_Checkout_Webhook {
 		$order_id   = (string) ( $session['orderId'] ?? '' );
 		$session_id = (string) ( $session['id'] ?? '' );
 
-		if ( '' === $order_id || ! function_exists( 'wc_get_order' ) ) {
+		if ( '' === $order_id || '' === $session_id || ! function_exists( 'wc_get_order' ) ) {
 			return null;
 		}
 
@@ -283,12 +343,14 @@ class Keeta_Checkout_Webhook {
 			return null;
 		}
 
-		$stored = (string) $order->get_meta( WC_Gateway_Keeta_Checkout::SESSION_META );
-		if ( '' !== $stored && $stored !== $session_id ) {
-			return null;
+		$known   = $order->get_meta( WC_Gateway_Keeta_Checkout::SESSIONS_META );
+		$known   = is_array( $known ) ? $known : array();
+		$current = (string) $order->get_meta( WC_Gateway_Keeta_Checkout::SESSION_META );
+		if ( '' !== $current ) {
+			$known[] = $current;
 		}
 
-		return $order;
+		return in_array( $session_id, $known, true ) ? $order : null;
 	}
 
 	/**

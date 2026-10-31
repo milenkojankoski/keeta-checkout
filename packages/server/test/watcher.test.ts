@@ -249,4 +249,41 @@ describe('PaymentWatcher.scan', () => {
     await watcher.stop();
     expect((await store.get(session.id))?.status).toBe('paid');
   });
+
+  it('a node that is down does not end the process', async () => {
+    // Seen on the live test network: rep2 answered "not ok" for fifteen seconds,
+    // scan() logged it and rethrew, start() had discarded the promise, and the
+    // unhandled rejection took the whole server down. Four restarts in an hour.
+    const { service, clock } = build();
+    const broken: HistorySource = {
+      getHistory: () => Promise.reject(new Error('Failed to make API call (not ok)'))
+    };
+    const logged: unknown[] = [];
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+
+    const watcher = new PaymentWatcher({
+      service,
+      history: broken,
+      receivingAddress: MERCHANT_ADDRESS,
+      now: clock.now,
+      log: { error: (...args: unknown[]) => void logged.push(args), warn: () => undefined }
+    });
+
+    try {
+      watcher.start(60_000);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await watcher.stop(); // must not throw either, even while a scan is failing
+
+      // A direct caller, such as the CLI's check command, still hears about it.
+      await expect(watcher.scan()).rejects.toThrow('not ok');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(logged.length).toBeGreaterThanOrEqual(1);
+    expect(unhandled).toEqual([]);
+  });
 });

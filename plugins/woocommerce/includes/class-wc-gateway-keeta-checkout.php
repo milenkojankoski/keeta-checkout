@@ -26,8 +26,19 @@ class WC_Gateway_Keeta_Checkout extends WC_Payment_Gateway {
 
 	const ID = 'keeta_checkout';
 
-	/** Order meta: the checkout session this order belongs to. */
+	/** Order meta: the checkout session this order currently points at. */
 	const SESSION_META = '_keeta_checkout_session_id';
+
+	/**
+	 * Order meta: every session this order has ever had, oldest first.
+	 *
+	 * A shopper who returns and presses the button again gets the request they
+	 * already have (see `reusable_session()`), but a total that changed, an expired
+	 * request, or an older plugin can still leave an order with more than one. A
+	 * payment on any of them is this order's money, so the webhook matches against
+	 * all of them, not only the current one.
+	 */
+	const SESSIONS_META = '_keeta_checkout_session_ids';
 
 	/** Order meta: the pay page the customer was sent to. */
 	const PAY_URL_META = '_keeta_checkout_pay_url';
@@ -228,12 +239,26 @@ class WC_Gateway_Keeta_Checkout extends WC_Payment_Gateway {
 		}
 
 		$client = $this->client();
+		$token  = (string) $this->get_option( 'token' );
+
+		// A shopper who comes back and presses the button again must land on the
+		// request they already have, not a second one. With two open requests for
+		// one order, a payment on the older one would arrive for a session the order
+		// no longer named and be dropped as unmatched: money taken, order never
+		// completed. Measured, not hypothetical; see docs/decisions/0013.
+		$existing = $this->reusable_session( $order, $client, $amount, $token );
+		if ( null !== $existing ) {
+			return array(
+				'result'   => 'success',
+				'redirect' => $existing,
+			);
+		}
 
 		try {
 			$session = $client->create_session(
 				array(
 					'amount'     => $amount,
-					'currency'   => (string) $this->get_option( 'token' ),
+					'currency'   => $token,
 					'orderId'    => (string) $order->get_id(),
 					'successUrl' => $this->get_return_url( $order ),
 					'cancelUrl'  => $order->get_cancel_order_url_raw(),
@@ -241,13 +266,11 @@ class WC_Gateway_Keeta_Checkout extends WC_Payment_Gateway {
 				)
 			);
 		} catch ( Keeta_Checkout_Client_Exception $error ) {
+			// The detail goes to the log. A transport error names the server's host
+			// and port, which is for the merchant, not the shopper.
 			$this->log( sprintf( 'order %d: could not create a session: %s', $order->get_id(), $error->getMessage() ) );
 			wc_add_notice(
-				sprintf(
-					/* translators: %s: the reason from the checkout server. */
-					__( 'Keeta payment is unavailable: %s', 'keeta-checkout' ),
-					$error->getMessage()
-				),
+				__( 'Keeta payment is unavailable right now. Please try again in a moment or choose another payment method.', 'keeta-checkout' ),
 				'error'
 			);
 			return;
@@ -266,24 +289,90 @@ class WC_Gateway_Keeta_Checkout extends WC_Payment_Gateway {
 
 		$order->update_meta_data( self::SESSION_META, $session_id );
 		$order->update_meta_data( self::PAY_URL_META, $pay_url );
+		$history   = $order->get_meta( self::SESSIONS_META );
+		$history   = is_array( $history ) ? $history : array();
+		$history[] = $session_id;
+		$order->update_meta_data( self::SESSIONS_META, array_values( array_unique( $history ) ) );
 		$order->add_order_note(
 			sprintf(
 				/* translators: 1: amount, 2: token, 3: session id. */
-				__( 'Keeta payment request created for %1$s %2$s (session %3$s).', 'keeta-checkout' ),
+				__( 'Keeta payment request created for %1$s %2$s (session %3$s). Awaiting payment.', 'keeta-checkout' ),
 				$amount,
-				(string) $this->get_option( 'token' ),
+				$token,
 				$session_id
 			)
 		);
-		// `on-hold` rather than `pending`: the customer has committed to a payment
-		// method and the stock should be held while they pay.
-		$order->update_status( 'on-hold', __( 'Awaiting a Keeta payment.', 'keeta-checkout' ) );
+		// `pending`, which is where WooCommerce already put it. An earlier version
+		// moved the order to `on-hold` to signal commitment, and that broke the pay
+		// page's own cancel button: the shopper's cancel link only acts on pending
+		// and failed orders, so they were told the order "can no longer be
+		// cancelled" and left waiting for the webhook. Pending is also what the
+		// stock hold and the unpaid-order cleanup key on.
+		if ( ! $order->has_status( 'pending' ) ) {
+			$order->set_status( 'pending' );
+		}
 		$order->save();
 
 		return array(
 			'result'   => 'success',
 			'redirect' => $pay_url,
 		);
+	}
+
+	/**
+	 * The pay page of a request this order can still be paid through, if it has one.
+	 *
+	 * Reused only when the server says the session is still open and it asks for
+	 * what the order now costs. A request priced before the total changed is
+	 * cancelled on the server instead, so the old amount cannot be paid later and
+	 * arrive looking like payment in full.
+	 *
+	 * @param WC_Order              $order  The order.
+	 * @param Keeta_Checkout_Client $client The API client.
+	 * @param string                $amount The total the order needs now, normalised.
+	 * @param string                $token  The configured token.
+	 * @return string|null The pay URL to send the shopper to, or null to create afresh.
+	 */
+	private function reusable_session( WC_Order $order, Keeta_Checkout_Client $client, string $amount, string $token ): ?string {
+		$session_id = (string) $order->get_meta( self::SESSION_META );
+		$pay_url    = (string) $order->get_meta( self::PAY_URL_META );
+		if ( '' === $session_id || '' === $pay_url ) {
+			return null;
+		}
+
+		try {
+			$session = $client->get_session( $session_id );
+		} catch ( Keeta_Checkout_Client_Exception $error ) {
+			$this->log( sprintf( 'order %d: could not read session %s, creating a new one: %s', $order->get_id(), $session_id, $error->getMessage() ) );
+			return null;
+		}
+
+		if ( 'open' !== (string) ( $session['status'] ?? '' ) ) {
+			return null;
+		}
+
+		$ticker     = $session['tokenTicker'] ?? null;
+		$same_token = ! is_string( $ticker ) || Keeta_Checkout_Amount::same_token( $token, $ticker );
+		if ( $same_token && Keeta_Checkout_Amount::equal( $amount, (string) ( $session['amountDecimal'] ?? '' ) ) ) {
+			$this->log( sprintf( 'order %d: sending the shopper back to open session %s', $order->get_id(), $session_id ) );
+			return $pay_url;
+		}
+
+		try {
+			$client->cancel_session( $session_id );
+			$order->add_order_note(
+				sprintf(
+					/* translators: %s: session id. */
+					__( 'The order total changed, so Keeta payment request %s was cancelled and a new one created.', 'keeta-checkout' ),
+					$session_id
+				)
+			);
+		} catch ( Keeta_Checkout_Client_Exception $error ) {
+			// Not fatal: a payment at the old amount is caught again when it arrives,
+			// because the webhook checks the paid amount against the order total.
+			$this->log( sprintf( 'order %d: could not cancel superseded session %s: %s', $order->get_id(), $session_id, $error->getMessage() ) );
+		}
+		return null;
 	}
 
 	/**

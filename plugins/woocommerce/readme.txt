@@ -99,3 +99,9 @@ to act as a payment method.
 = 0.1.0 =
 * First release: redirect-based gateway, signed webhooks, order notes for payments
   that need refunding, and a warning when the token and store currency disagree.
+* Pressing the pay button again returns the shopper to the request they already
+  have instead of creating a second one, and a payment on any request an order has
+  ever had is credited to that order.
+* Orders stay pending while awaiting payment, so the pay page's cancel button works.
+* A payment whose amount no longer matches the order total puts the order on hold
+  for review instead of completing it; a second payment on a paid order is noted.

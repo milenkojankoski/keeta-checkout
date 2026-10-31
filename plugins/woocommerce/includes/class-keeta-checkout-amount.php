@@ -258,6 +258,52 @@ class Keeta_Checkout_Amount {
 	}
 
 	/**
+	 * Whether two decimal strings name the same amount.
+	 *
+	 * WooCommerce says `12.50`; the checkout server says `12.5`, because it strips
+	 * trailing zeros when it formats base units. Both sides are brought to one
+	 * canonical form and compared as strings, so no float is ever involved.
+	 *
+	 * @param string $a One amount.
+	 * @param string $b Another.
+	 * @return bool
+	 */
+	public static function equal( string $a, string $b ): bool {
+		$a = self::canonical( $a );
+		$b = self::canonical( $b );
+		return null !== $a && null !== $b && $a === $b;
+	}
+
+	/**
+	 * `0012.500` becomes `12.5`, `7.00` becomes `7`, `.5` becomes `0.5`.
+	 *
+	 * @param string $value A decimal string.
+	 * @return string|null Null when it is not a plain decimal.
+	 */
+	private static function canonical( string $value ): ?string {
+		$value = trim( $value );
+		if ( 1 !== preg_match( '/^(\d*)(?:\.(\d*))?$/', $value, $m ) || '' === $value || '.' === $value ) {
+			return null;
+		}
+		$whole    = ltrim( $m[1], '0' );
+		$fraction = rtrim( $m[2] ?? '', '0' );
+		$whole    = '' === $whole ? '0' : $whole;
+		return '' === $fraction ? $whole : $whole . '.' . $fraction;
+	}
+
+	/**
+	 * Whether two ticker spellings name the same token: `$USDC` and `usdc` do.
+	 *
+	 * @param string $a One ticker.
+	 * @param string $b Another.
+	 * @return bool
+	 */
+	public static function same_token( string $a, string $b ): bool {
+		$strip = static fn( string $t ): string => strtoupper( ltrim( trim( $t ), '$' ) );
+		return $strip( $a ) === $strip( $b );
+	}
+
+	/**
 	 * Whether a token is a plausible pairing for a store currency.
 	 *
 	 * An unknown currency returns true: there is nothing to compare against, and a

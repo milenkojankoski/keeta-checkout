@@ -446,6 +446,15 @@ async function streamSessionEvents(
   });
 
   req.on('close', finish);
+  // The session lookup above awaited, and a client can drop the socket during it.
+  // Node emits 'close' once; if that happened before the listener existed, nothing
+  // would ever release this stream's slot or its listener. Not reproduced under
+  // 400 open-and-abort attempts against the live server, but the guard costs one
+  // property read and the failure it prevents would be permanent.
+  if (req.destroyed || res.destroyed) {
+    finish();
+    return;
+  }
 
   send('session', service.toPublicView(session));
   if (!awaitingPayment(session)) finish();

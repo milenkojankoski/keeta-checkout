@@ -74,6 +74,21 @@ class Keeta_Checkout_Client {
 	}
 
 	/**
+	 * Cancel an open session.
+	 *
+	 * Done when an order's total changes under an open request, so the old amount
+	 * can no longer be paid. The route needs no API key; holding the id is the
+	 * authority, exactly as it is for the shopper's own cancel button.
+	 *
+	 * @param string $session_id Session id.
+	 * @return array<string,mixed> The session after cancelling.
+	 * @throws Keeta_Checkout_Client_Exception On any failure.
+	 */
+	public function cancel_session( string $session_id ): array {
+		return $this->request( 'POST', '/api/sessions/' . rawurlencode( $session_id ) . '/cancel' );
+	}
+
+	/**
 	 * Which tokens this server will price a session in.
 	 *
 	 * @return array<int,array<string,mixed>>

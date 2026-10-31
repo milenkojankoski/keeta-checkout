@@ -91,9 +91,22 @@ export class PaymentWatcher {
    */
   start(intervalMs = 5_000): void {
     if (this.#timer !== undefined) return;
-    void this.scan();
-    this.#timer = setInterval(() => void this.scan(), intervalMs);
+    this.#tick();
+    this.#timer = setInterval(() => this.#tick(), intervalMs);
     this.#timer.unref();
+  }
+
+  /**
+   * One scheduled scan.
+   *
+   * `scan()` rethrows after logging, so that a direct caller (the CLI's `check`,
+   * a test) sees the failure. The schedule must swallow it: a rejected promise
+   * nobody awaits ends a Node process, and that is exactly what happened when a
+   * representative on the test network answered "not ok" for fifteen seconds. A
+   * node that is briefly down must cost a missed poll, not the server.
+   */
+  #tick(): void {
+    this.scan().catch(() => undefined);
   }
 
   async stop(): Promise<void> {
@@ -101,7 +114,9 @@ export class PaymentWatcher {
       clearInterval(this.#timer);
       this.#timer = undefined;
     }
-    await this.#inFlight;
+    // A scan that is failing right now has already been logged; stopping is not
+    // the place to hear about it a second time.
+    await this.#inFlight?.catch(() => undefined);
   }
 
   /** Run one scan now. If one is already running, returns its result instead of starting another. */

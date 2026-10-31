@@ -132,6 +132,89 @@ and left.
 **One server per database.** Only the memory and SQLite stores exist, so horizontal
 scaling waits for a Postgres adapter.
 
+## Independent re-review
+
+Same day, by a different model, at the user's request, because the pass above
+reviewed code its own author had written. Everything below was reproduced against
+the running development stack before it was changed and verified there afterwards.
+The pass above was checked too: the signature verifier, the stream cap, the headers,
+the SQL binding, the URL scheme checks and the dependency reachability argument all
+hold as described. What it missed was behavioural, and two of the three were only
+visible by driving the system rather than reading it.
+
+**The server died when a Keeta node did** (critical, server). During the plugin
+probes a test-network representative answered "not ok" for fifteen seconds. The
+watcher's `scan()` logs a failure and rethrows, so that a direct caller such as the
+CLI's `check` command hears about it. `start()` scheduled it with `void`, which
+discards the promise, and a rejected promise nobody awaits ends a Node process. The
+container had restarted four times in an hour; under `npx keeta-checkout serve`
+with no supervisor it would have stayed dead and credited nothing until someone
+noticed. The scheduled path now swallows what `scan()` rethrows, `stop()` no longer
+rethrows a failing scan either, and a test drives a watcher against a source that
+always rejects and asserts that no unhandled rejection reaches the process. The
+test failed against the old code with exactly the error from the log.
+
+**A payment on a superseded request was dropped** (high, plugin, money). Pressing
+the pay button a second time, which a shopper who goes back and forth does, created
+a second session and overwrote the one the order pointed at. A payment on the first
+request, from the tab the shopper kept open, arrived as a signed `paid` event for a
+session the order no longer named, and the webhook answered `matched: false` and did
+nothing. Money taken, order never completed, and logged only when debug logging was
+on. Reproduced with a forged, correctly signed event. Three changes: the gateway now
+reads the existing session back and sends the shopper to it when it is still open
+for what the order costs now, cancelling it on the server instead when the total
+has changed; the order keeps a list of every session it has ever had and the
+webhook matches against all of them; and a second `paid` through a different block
+on an already paid order adds a note saying the customer paid twice and one payment
+must go back.
+
+**The pay page's cancel button produced an error** (medium, plugin). Orders went to
+`on-hold`, and WooCommerce's own cancel link acts only on `pending` and `failed`.
+The shopper landed on the cart with "Your order can no longer be cancelled. Please
+contact us if you need assistance", and the order sat on hold until the `cancelled`
+webhook arrived twenty seconds later. Orders now stay `pending`, which is also what
+WooCommerce's stock hold and unpaid-order cleanup key on. Reproduced before and
+verified after: the same click now lands on "Your order was cancelled" with the
+order already cancelled.
+
+**Hardening in the webhook handler** (plugin). Each of these was a path the code
+allowed and should not have: an `expired` for a superseded request cancelled the
+order even though a newer request was open, so cancellation now requires the event
+to name the order's current session; the shopper may have switched to another
+payment method on the order-pay page, so it also requires the order's payment
+method to still be Keeta; a `paid` event completed the order without comparing the
+session's amount to the order total, so a total edited after the request was
+priced now puts the order on hold with a note for a person instead of completing
+it; a `paid` event type was trusted without checking that the session itself says
+`paid`; and an order with no Keeta session at all could be matched by `orderId`
+alone, so a signed event could in principle touch an order from another gateway.
+An order is now matched only through a session it created. All seven scenarios,
+including the three above, were driven against the live shop with forged signed
+events and behaved as intended.
+
+**Smaller.** The shopper saw the checkout server's own error text, which for a
+transport failure names an internal host and port; they now see a generic message
+and the detail goes to the log. The event stream registers its close handler after
+an `await`, and if the client dropped the socket during that wait Node would
+already have emitted `close` once and the slot and listener would never be
+released; not reproduced under 400 open-and-abort attempts, but the guard is one
+property read.
+
+**Two amounts, one comparison.** WooCommerce says `12.50`, the server says `12.5`
+because it strips trailing zeros. A small canonical-form comparison was added to
+the plugin's amount helper, with sixteen assertions, so the gateway and the webhook
+never compare money as floats or as raw strings.
+
+**Worth knowing for a merchant.** A `pending` order holds its stock only for
+WooCommerce's hold-stock minutes, sixty by default. A session lifetime longer than
+that can let stock be released while the request is still payable, and the amount
+check above is then what keeps a late payment from completing an order that can no
+longer be fulfilled as priced. Set the session lifetime no longer than the hold.
+
+Two live end-to-end tests failed once during this pass and passed on the rerun,
+with the test network's outage in between. They are recorded here rather than
+smoothed over.
+
 ## Still unverified by anyone
 
 Whether any wallet registers the `keeta://` scheme, which needs a person with a
