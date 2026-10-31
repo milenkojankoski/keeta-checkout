@@ -1,10 +1,29 @@
 {
   "name": "keeta-checkout",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
   "description": "Run a Keeta Checkout server: accept Keeta payments on your website.",
+  "keywords": [
+    "keeta",
+    "payments",
+    "checkout",
+    "crypto",
+    "woocommerce",
+    "stablecoin"
+  ],
+  "homepage": "https://github.com/milenkojankoski/keeta-checkout#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/milenkojankoski/keeta-checkout.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/milenkojankoski/keeta-checkout/issues"
+  },
   "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "keeta-checkout": "./bin/keeta-checkout.js"
   },

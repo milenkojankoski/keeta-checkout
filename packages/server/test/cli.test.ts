@@ -84,7 +84,9 @@ describe('main', () => {
       expect(await main(['--version'])).toBe(0);
       expect(await main(['version'])).toBe(0);
       expect(written.join('')).not.toContain('Usage:');
-      expect(written.join('')).toContain('keeta-checkout 0.0.0');
+      // The real version from the manifest, so a release cannot ship saying 0.0.0.
+      expect(written.join('')).toMatch(/^keeta-checkout \d+\.\d+\.\d+/m);
+      expect(written.join('')).not.toContain('0.0.0');
 
       written.length = 0;
       expect(await main(['--help'])).toBe(0);

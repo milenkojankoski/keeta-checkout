@@ -11,6 +11,7 @@
  * finds out about a bad address before a shopper does.
  */
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { configFromEnv } from '@keeta-checkout/server';
 import { runCheck } from './check.ts';
 import { runInit, terminalAsker } from './init.ts';
@@ -50,7 +51,8 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
   // Version before help: `--version` carries no command, and the help branch would
   // otherwise claim it.
   if (flagBoolean(args, 'version') || args.command === 'version') {
-    process.stdout.write('keeta-checkout 0.0.0\n');
+    process.stdout.write(`keeta-checkout ${cliVersion()}
+`);
     return 0;
   }
   const askedForHelp = flagBoolean(args, 'help') || args.command === 'help';
@@ -169,3 +171,13 @@ export { startRuntime, describeRuntime, type Runtime, type RuntimeOptions } from
 export { runCheck, type CheckResult } from './check.ts';
 export { runInit } from './init.ts';
 export { parseArgs } from './options.ts';
+
+/**
+ * The version from this package's own manifest, read when asked rather than baked
+ * in at build time. `dist/index.mjs` and `src/index.ts` both sit one level below
+ * `package.json`, so the same relative path serves the bundle and the dev runner.
+ */
+function cliVersion(): string {
+  const manifest = createRequire(import.meta.url)('../package.json') as { version?: unknown };
+  return typeof manifest.version === 'string' ? manifest.version : 'unknown';
+}

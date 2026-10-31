@@ -19,6 +19,10 @@ watching them get credited. Start at [`docs/quickstart.md`](docs/quickstart.md),
 There is a **WooCommerce plugin** in `plugins/woocommerce/`, and any shop with a
 backend can integrate directly with a session, a script tag and the pay button.
 
+Published as **v0.1.0**: `npx keeta-checkout` on npm, the image
+`ghcr.io/milenkojankoski/keeta-checkout`, and the WooCommerce plugin zip on the
+[GitHub release](https://github.com/milenkojankoski/keeta-checkout/releases).
+
 Still to come: the reference integration (step 10),
 refunds (step 13), and the Shopify app (step 14).
 

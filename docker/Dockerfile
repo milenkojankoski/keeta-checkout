@@ -57,6 +57,10 @@ RUN pnpm --filter=keeta-checkout --prod --legacy deploy /deploy
 # ---------- runtime ----------
 FROM node:24-bookworm-slim AS runtime
 
+LABEL org.opencontainers.image.source="https://github.com/milenkojankoski/keeta-checkout" \
+      org.opencontainers.image.description="Keeta Checkout: accept Keeta payments on your website. Watch-only; holds no key." \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 ENV NODE_ENV=production
 # A container must listen on every interface, not just loopback.
 ENV HOST=0.0.0.0

@@ -54,7 +54,14 @@ shopper who cannot pay.
 npx keeta-checkout serve
 ```
 
-Or with Docker:
+Or with Docker, from the published image:
+
+```bash
+docker run --rm -p 3000:3000 -v keeta-checkout-data:/data --env-file .env \
+  ghcr.io/milenkojankoski/keeta-checkout:0.1.0
+```
+
+Or build it yourself from a checkout:
 
 ```bash
 docker build -f docker/Dockerfile -t keeta-checkout .
