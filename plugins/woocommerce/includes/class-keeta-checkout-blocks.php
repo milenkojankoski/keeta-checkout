@@ -68,15 +68,20 @@ final class Keeta_Checkout_Blocks extends AbstractPaymentMethodType {
 	 */
 	public function get_payment_method_script_handles(): array {
 		$handle = 'keeta-checkout-blocks';
+		$base   = KEETA_CHECKOUT_PATH . 'keeta-checkout.php';
 
 		wp_register_script(
 			$handle,
-			plugins_url( 'assets/blocks.js', KEETA_CHECKOUT_PATH . 'keeta-checkout.php' ),
+			plugins_url( 'assets/blocks.js', $base ),
 			array( 'wc-blocks-registry', 'wc-settings', 'wp-element', 'wp-html-entities' ),
 			KEETA_CHECKOUT_VERSION,
 			true
 		);
 
+		// The stylesheet is deliberately not enqueued here. `is_checkout()` is true
+		// on the block checkout page as well as the classic one, so the gateway's
+		// own `wp_enqueue_scripts` hook already covers both and one enqueue is
+		// enough for either checkout.
 		return array( $handle );
 	}
 
@@ -92,9 +97,15 @@ final class Keeta_Checkout_Blocks extends AbstractPaymentMethodType {
 		$gateway = $this->gateway();
 
 		return array(
-			'title'       => $this->get_setting( 'title', __( 'Pay with Keeta', 'keeta-checkout' ) ),
-			'description' => $this->get_setting( 'description', '' ),
-			'supports'    => null === $gateway ? array( 'products' ) : array_values( $gateway->supports ),
+			'title'          => $this->get_setting( 'title', __( 'Pay with Keeta', 'keeta-checkout' ) ),
+			'description'    => $this->get_setting( 'description', '' ),
+			'supports'       => null === $gateway ? array( 'products' ) : array_values( $gateway->supports ),
+			// Said plainly, because a redirect a shopper did not expect is the
+			// moment they abandon a cart.
+			'redirectNotice' => __(
+				'You will be taken to a secure page to pay from your Keeta wallet, then brought back here.',
+				'keeta-checkout'
+			),
 		);
 	}
 

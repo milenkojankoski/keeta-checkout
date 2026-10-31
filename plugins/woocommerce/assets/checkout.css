@@ -1,0 +1,86 @@
+/**
+ * The Keeta payment method at checkout.
+ *
+ * Written to sit inside somebody else's theme, so it does as little as possible:
+ * no colours of its own beyond a faint tinted panel, no fonts, no borders that
+ * fight the surrounding form. Sizes are in `em` so the method scales with whatever
+ * type the theme already set.
+ *
+ * The logo inherits `currentColor`, which is why no colour is declared for it. On a
+ * light theme it draws in the theme's text colour; on a dark one it inverts with
+ * everything else, and there is no second asset to keep in step.
+ */
+
+/* The row beside the radio button. */
+.keeta-checkout__label {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.55em;
+	line-height: 1.2;
+}
+
+.keeta-checkout__mark {
+	display: inline-flex;
+	align-items: center;
+	flex: 0 0 auto;
+}
+
+.keeta-checkout__mark svg {
+	display: block;
+	/* The mark is a 50x20 lockup, so height drives it and width follows. */
+	height: 1.15em;
+	width: auto;
+}
+
+.keeta-checkout__title {
+	font-weight: 600;
+}
+
+/* Shown once the method is selected. */
+.keeta-checkout__content {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	margin: 0;
+	font-size: 0.925em;
+}
+
+.keeta-checkout__content p {
+	margin: 0;
+}
+
+.keeta-checkout__description {
+	/* The merchant's own words, so they lead. */
+	color: inherit;
+}
+
+/*
+ * What happens next. A faint panel rather than a coloured callout: a shopper at a
+ * payment step should be reassured, not alarmed, and a bright box here reads as a
+ * warning. `color-mix` tints whatever the theme's own text colour is, so this works
+ * without knowing anything about the palette.
+ */
+.keeta-checkout__next {
+	padding: 0.65em 0.8em;
+	border-radius: 0.4em;
+	background: color-mix(in srgb, currentColor 6%, transparent);
+	opacity: 0.85;
+}
+
+/* `color-mix` is widely supported, but fall back to nothing rather than to a
+   guessed colour that might be invisible on some theme. */
+@supports not (background: color-mix(in srgb, currentColor 6%, transparent)) {
+	.keeta-checkout__next {
+		padding: 0;
+		background: none;
+	}
+}
+
+/* The classic shortcode checkout puts the gateway icon in the label itself. */
+.payment_method_keeta_checkout label img,
+.wc_payment_method.payment_method_keeta_checkout img {
+	max-height: 1.3em;
+	width: auto;
+	vertical-align: middle;
+	margin-left: 0.4em;
+}

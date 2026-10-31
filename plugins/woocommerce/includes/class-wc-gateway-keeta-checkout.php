@@ -42,9 +42,12 @@ class WC_Gateway_Keeta_Checkout extends WC_Payment_Gateway {
 			'Accept Keeta payments. Money settles directly to your own Keeta account in about 400 ms, with no processor fee. The checkout server holds no key and cannot move your funds.',
 			'keeta-checkout'
 		);
-		$this->has_fields         = false;
-		$this->supports           = array( 'products' );
-		$this->icon               = '';
+		$this->has_fields = false;
+		$this->supports   = array( 'products' );
+		// Keeta's own mark, shown beside the method name on the classic checkout.
+		// The block checkout inlines it instead, so it can inherit the theme's
+		// text colour; an `<img>` cannot.
+		$this->icon = plugins_url( 'assets/keeta-mark.svg', KEETA_CHECKOUT_PATH . 'keeta-checkout.php' );
 
 		$this->init_form_fields();
 		$this->init_settings();
@@ -55,6 +58,22 @@ class WC_Gateway_Keeta_Checkout extends WC_Payment_Gateway {
 
 		add_action( 'woocommerce_update_options_payment_gateways_' . $this->id, array( $this, 'process_admin_options' ) );
 		add_action( 'woocommerce_thankyou_' . $this->id, array( $this, 'maybe_sync_on_return' ) );
+		// The classic shortcode checkout loads none of the block assets, so the
+		// small amount of styling the icon needs has to be enqueued separately.
+		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_checkout_styles' ) );
+	}
+
+	/** Styles for the classic checkout, loaded only on the checkout page. */
+	public function enqueue_checkout_styles(): void {
+		if ( ! function_exists( 'is_checkout' ) || ! is_checkout() ) {
+			return;
+		}
+		wp_enqueue_style(
+			'keeta-checkout-checkout',
+			plugins_url( 'assets/checkout.css', KEETA_CHECKOUT_PATH . 'keeta-checkout.php' ),
+			array(),
+			KEETA_CHECKOUT_VERSION
+		);
 	}
 
 	/** The settings screen. */

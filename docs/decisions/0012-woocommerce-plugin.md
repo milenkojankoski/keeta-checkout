@@ -190,6 +190,41 @@ reached `processing` with the block hash as its transaction id.
 but not clicked through, and nobody has driven the flow with a mouse. Every server
 path a shopper triggers has now been exercised.
 
+### The payment method's appearance
+
+The label is Keeta's own mark followed by the merchant's configured title, and
+selecting the method shows the merchant's description plus one line saying the
+shopper will be sent elsewhere and brought back. A redirect nobody warned them
+about is the moment a cart is abandoned.
+
+Decisions behind it:
+
+- **Keeta's real mark, not an approximation.** Taken from the Keeta SDK's own
+  published assets (`logo-keeta-light.svg`), unmodified except for the three
+  changes below. **Worth checking Keeta's trademark position before wide
+  distribution:** using a payment network's mark to say "pay with this network" is
+  ordinary nominative use, and every card and wallet integration does it, but
+  Keeta has published no brand guidelines that this repository could follow.
+- **A `viewBox` was added.** The source declares `width="50" height="20"` and no
+  `viewBox`, so it could not scale. The label sizes it in `em` so it tracks
+  whatever type the theme set.
+- **The fills became `currentColor`.** The source paints in `#2C2A2A` through two
+  gradients. Inheriting the surrounding text colour means one asset reads correctly
+  on a light theme and on a dark one, with no second file to keep in step.
+- **The gradient ids were prefixed.** They were `a` and `b`. Two inline SVGs on one
+  page with an `id="a"` gradient break each other, and the symptom is a logo that
+  renders as a blank space on some pages only.
+- **Inlined in the block, linked in the classic checkout.** Inlining avoids an extra
+  request and a late flash, and is what allows `currentColor`. The classic checkout
+  takes a URL for `$this->icon` and an `<img>` cannot inherit a colour, so that path
+  gets the brand-ink file.
+- **The stylesheet declares no colours.** The one tinted panel uses
+  `color-mix(in srgb, currentColor 6%, transparent)`, so it tints whatever the theme
+  already uses and needs to know nothing about the palette. A `@supports` fallback
+  drops the tint rather than guessing a colour that might be invisible.
+- **The logo is `aria-hidden`** and the payment method's accessible name is the
+  plain title, since the logo and the text say the same thing.
+
 ### Two things worth knowing operationally
 
 - **The order lags the session by up to one flush interval.** The pay page flips to
