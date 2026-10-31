@@ -30,17 +30,49 @@ require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-client.php';
 require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-webhook.php';
 
 /**
- * Declare compatibility with WooCommerce's High Performance Order Storage.
+ * Declare what this plugin is compatible with.
  *
- * This plugin reads and writes orders only through the CRUD methods, never with
- * direct post meta queries, so it works on either storage backend.
+ * `custom_order_tables`: orders are read and written only through the CRUD methods,
+ * never with direct post meta queries, so either storage backend works.
+ *
+ * `cart_checkout_blocks`: see the blocks integration below.
  */
 add_action(
 	'before_woocommerce_init',
 	static function (): void {
-		if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
-			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+		if ( ! class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
+			return;
 		}
+		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'cart_checkout_blocks', __FILE__, true );
+	}
+);
+
+/**
+ * Register the gateway with the block checkout as well as the classic one.
+ *
+ * This is not optional, and it is easy to miss. The Checkout block is what a new
+ * WooCommerce install uses, and it builds its payment list from its own registry
+ * rather than from `get_available_payment_gateways()`. WooCommerce ships
+ * integrations for its own gateways, so cheque, bacs, cod and paypal appear there;
+ * a third-party gateway that does not register one is simply absent, however
+ * correctly it is configured. The shopper sees "There are no payment methods
+ * available" and nothing in the classic diagnostics explains why.
+ */
+add_action(
+	'woocommerce_blocks_loaded',
+	static function (): void {
+		if ( ! class_exists( \Automattic\WooCommerce\Blocks\Payments\Integrations\AbstractPaymentMethodType::class ) ) {
+			return;
+		}
+		require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-blocks.php';
+
+		add_action(
+			'woocommerce_blocks_payment_method_type_registration',
+			static function ( \Automattic\WooCommerce\Blocks\Payments\PaymentMethodRegistry $registry ): void {
+				$registry->register( new Keeta_Checkout_Blocks() );
+			}
+		);
 	}
 );
 

@@ -46,6 +46,7 @@ If they close the tab after paying, the order still completes.
 * **No refunds yet.** Send money back from your own wallet. The server's
   `/api/payments` endpoint lists what needs refunding and to whom, including
   underpayments and late payments that could not be credited.
+* **Works with both checkouts.** The classic shortcode and the Checkout block.
 * **No tax calculation.** WooCommerce already does your tax; this plugin passes the
   total it is given.
 

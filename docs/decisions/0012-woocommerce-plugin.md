@@ -135,12 +135,74 @@ The security-critical paths were probed directly against the live endpoint:
 After all of that the paid order was still `processing`, still had its original
 transaction id, and still had exactly one settlement note.
 
-**What is still not verified:** the settings screen and its warnings have only been
-read, not clicked through, and no payment has gone through the WooCommerce checkout
-form in a browser as a shopper would. The gateway's own code path has, through
-`process_payment()`.
+### The block checkout, and the bug that only a browser could find
 
-### Four bugs the WordPress run found
+`process_payment()` succeeding is not the same as a shopper being able to pay. The
+first time the dev shop was opened in a browser the checkout said **"There are no
+payment methods available"**, while every classic diagnostic said the gateway was
+fine: enabled, available, and the only entry in
+`get_available_payment_gateways()`.
+
+A new WooCommerce install uses the **Checkout block**, which does not read that
+function. It builds its list from `PaymentMethodRegistry`, and that registry held
+only `cheque, paypal, bacs, cod`, the gateways WooCommerce ships block integrations
+for. A third-party gateway that registers no integration is simply absent, however
+correctly it is configured, and nothing in the classic diagnostics hints at why.
+
+Declaring `cart_checkout_blocks` compatibility is **not** sufficient; that only
+stops WooCommerce flagging the plugin as incompatible. The gateway needs:
+
+- `Keeta_Checkout_Blocks`, an `AbstractPaymentMethodType` registered on
+  `woocommerce_blocks_payment_method_type_registration`, whose `is_active()` defers
+  to the gateway's own `is_available()` so the two checkouts cannot disagree;
+- `assets/blocks.js`, which calls `registerPaymentMethod`. Plain JavaScript against
+  globals WooCommerce already loads, so the plugin still ships as source with no
+  build step and a merchant can read every line that runs on their checkout.
+
+There is little in that JavaScript because the gateway has no fields: a label, a
+description, and `canMakePayment` returning true, since availability was already
+decided on the server.
+
+One trap inside the fix: `protected $name = WC_Gateway_Keeta_Checkout::ID;` is a
+fatal error. A property default is evaluated when the class is defined, which can be
+before WooCommerce has loaded the gateway class. It is a literal now.
+
+### Verified through the block checkout, 2026-10-31
+
+The checkout page now ships `paymentMethodSortOrder: ["keeta_checkout"]` with the
+method pre-selected, enqueues `blocks.js`, and no longer shows the no-methods
+message.
+
+An order placed through `/wc/store/v1/checkout`, which is what the block posts when
+a shopper presses the order button:
+
+| | |
+| --- | --- |
+| HTTP status | 200 |
+| order | `on-hold`, session id stored |
+| `payment_result.payment_status` | `success` |
+| `payment_result.redirect_url` | `http://localhost:3000/pay/cs_…` |
+
+Paid for real from the dev payer wallet, the webhook was delivered, and the order
+reached `processing` with the block hash as its transaction id.
+
+**What is still not verified:** the settings screen and its warnings have been read
+but not clicked through, and nobody has driven the flow with a mouse. Every server
+path a shopper triggers has now been exercised.
+
+### Two things worth knowing operationally
+
+- **The order lags the session by up to one flush interval.** The pay page flips to
+  paid the instant the chain settles, but the webhook dispatcher flushes every ten
+  seconds, so the WooCommerce order follows a moment later. Not a bug, but it looks
+  like one if you check the order in the same second.
+- **One receiving address per checkout server.** The watcher watches an *account*,
+  not a database. Two servers sharing a receiving address each see the other's
+  payments as `unknown_reference` and keep recording them. The dev shop showed this
+  plainly: it recorded the payments made by the end-to-end test suite, which uses
+  the same development wallet.
+
+### Five bugs the WordPress run found
 
 1. **The Docker image had never actually built.** There was no `.dockerignore`, so
    `COPY . .` dropped the host's `node_modules`, built for another platform and full
@@ -159,6 +221,9 @@ form in a browser as a shopper would. The gateway's own code path has, through
 4. **The plugin claimed WordPress 6.4 and WooCommerce 9.4.** WooCommerce 11.2.1
    requires WordPress 7.0, so the stated floor was a configuration the plugin cannot
    run in. Corrected to 7.0 and 9.0, tested against 7.1 and 11.2.
+
+5. **The gateway did not appear in the block checkout at all,** which is the first
+   thing a shopper would have hit. See the section above.
 
 One more thing the run surfaced that is not a bug: **WooCommerce stores prices at
 two decimals by default**, so a 0.001 product became 0.00 and the gateway correctly

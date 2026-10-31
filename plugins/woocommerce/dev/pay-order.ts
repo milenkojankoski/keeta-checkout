@@ -106,7 +106,8 @@ try {
     const current = await merchantGet<SessionView>(`/api/sessions/${encodeURIComponent(session.id)}`);
     if (current.status !== 'open') {
       console.log(`\nsettled   ${current.status}`);
-      console.log('\nCheck the order in WooCommerce: it should be paid, with the block hash in its notes.');
+      console.log('\nThe session is settled. The order follows once the webhook is delivered,');
+      console.log('which the dispatcher flushes every ten seconds, so give it a moment.');
       console.log('  http://localhost:8080/wp-admin/edit.php?post_type=shop_order');
       break;
     }
