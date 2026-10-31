@@ -4,15 +4,15 @@
  * Plugin URI:        https://github.com/milenkojankoski/keeta-checkout
  * Description:       Accept Keeta payments in WooCommerce. Settles to your own Keeta account in about 400 ms, with no processor fee.
  * Version:           0.1.0
- * Requires at least: 6.4
+ * Requires at least: 7.0
  * Requires PHP:      8.1
  * Author:            Keeta Checkout
  * License:           Apache-2.0
  * License URI:       https://www.apache.org/licenses/LICENSE-2.0
  * Text Domain:       keeta-checkout
  *
- * WC requires at least: 8.0
- * WC tested up to:      9.4
+ * WC requires at least: 9.0
+ * WC tested up to:      11.2
  *
  * @package KeetaCheckout
  */

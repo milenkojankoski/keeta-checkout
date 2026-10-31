@@ -23,6 +23,9 @@ RUN apt-get update \
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
+# pnpm refuses to purge or recreate a modules directory without a TTY unless it
+# knows it is running unattended. A build is unattended by definition.
+ENV CI=true
 RUN corepack enable
 
 WORKDIR /app
@@ -37,11 +40,19 @@ COPY packages/refunds/package.json ./packages/refunds/
 
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 
+# `.dockerignore` keeps the host's node_modules out of this, which is essential:
+# copying it over the installed tree is what breaks the install.
 COPY . .
 RUN pnpm build
 
-# Drop everything the runtime does not need, including every devDependency.
-RUN pnpm prune --prod
+# Assemble a self-contained tree for just the CLI, with only its production
+# dependencies.
+#
+# Not `pnpm prune --prod`: that leaves the packages in the store but strips the
+# per-package symlinks, so `/app/packages/cli/node_modules` ends up empty and Node
+# cannot resolve `@keetanetwork/keetanet-client` at all. The container built, started,
+# and died on its first import.
+RUN pnpm --filter=keeta-checkout --prod --legacy deploy /deploy
 
 # ---------- runtime ----------
 FROM node:24-bookworm-slim AS runtime
@@ -55,9 +66,7 @@ ENV KEETA_CHECKOUT_DATABASE=/data/keeta-checkout.sqlite
 
 WORKDIR /app
 
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/packages ./packages
+COPY --from=builder /deploy ./
 
 # `node` is the unprivileged user the official image already ships.
 RUN mkdir -p /data && chown -R node:node /data /app
@@ -73,5 +82,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # Exec form, so the process is PID 1 and receives SIGTERM directly. The server
 # drains the watcher and the webhook queue before exiting.
-ENTRYPOINT ["node", "packages/cli/bin/keeta-checkout.js"]
+ENTRYPOINT ["node", "bin/keeta-checkout.js"]
 CMD ["serve"]

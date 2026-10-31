@@ -1,9 +1,9 @@
 {
-  "name": "keeta-checkout",
+  "name": "keeta-checkout-workspace",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Accept Keeta payments on your website: Stripe-shaped API, drop-in pay button, webhooks.",
+  "description": "Workspace root. The publishable CLI is packages/cli, named keeta-checkout.",
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.5.2",
   "engines": {

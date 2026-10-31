@@ -1,0 +1,5 @@
+# Nothing generated here belongs in the repository: the WordPress files, the
+# database and the session store all live in Docker named volumes, and anything
+# that lands in this folder is a local artefact.
+*.log
+wp-content/

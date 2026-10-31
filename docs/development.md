@@ -229,7 +229,7 @@ packages/cli       the `keeta-checkout` command: init, check, serve
 packages/button    the pay button web component, and its browser bundle
 packages/sdk       typed client for the REST API (not built yet)
 packages/refunds   refunds with a delegated account (step 13, v2)
-plugins/woocommerce  the WooCommerce gateway (PHP, tested in a container)
+plugins/woocommerce  the WooCommerce gateway (PHP); dev/ brings up a real WordPress
 plugins/shopify      not started (step 14)
 examples/          reference integrations, including a webhook handler
 docker/            Dockerfile and compose file

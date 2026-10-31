@@ -102,10 +102,69 @@ container:
 Regenerate the fixtures with `pnpm fixtures`; run the PHP suite with
 `pnpm test:php`, which needs Docker.
 
-**What is not verified:** everything that needs WordPress. The gateway registration,
-the settings screen, `payment_complete()`, the REST route, and the order notes have
-been reviewed but never executed. A WordPress install is the next step before anyone
-relies on this.
+### Verified in real WordPress, 2026-10-31
+
+`plugins/woocommerce/dev/` brings up WordPress 7.1.4, WooCommerce 11.2.1, MariaDB
+and a Keeta Checkout server built from this repository, with the plugin bind-mounted
+from the working tree. One `docker compose up -d` installs and configures all of it.
+
+A complete payment went through it:
+
+| Step | Result |
+| --- | --- |
+| gateway registration | `WC_Gateway_Keeta_Checkout`, available, configured |
+| `process_payment()` | created a session, order moved to `on-hold` |
+| the redirect | `http://localhost:3000/pay/cs_…` |
+| a real send on the test network | 0.01 KTA from the dev payer wallet |
+| the webhook | delivered on the first attempt, HTTP 200 |
+| the order | `processing`, `is_paid`, transaction id set to the block hash |
+| the order notes | the amount, the payer and the explorer link |
+
+The security-critical paths were probed directly against the live endpoint:
+
+| Probe | Answer |
+| --- | --- |
+| replay of a handled event | 200 `duplicate: true`, nothing changed |
+| a new event id for an order already paid | 200, not re-completed |
+| the right order id with the wrong session id | 200 `matched: false`, refused |
+| a tampered body | **400 NO_MATCH** |
+| the wrong secret | **400 NO_MATCH** |
+| no signature header | **400 MALFORMED_HEADER** |
+| an unknown order | 200 `matched: false` |
+
+After all of that the paid order was still `processing`, still had its original
+transaction id, and still had exactly one settlement note.
+
+**What is still not verified:** the settings screen and its warnings have only been
+read, not clicked through, and no payment has gone through the WooCommerce checkout
+form in a browser as a shopper would. The gateway's own code path has, through
+`process_payment()`.
+
+### Four bugs the WordPress run found
+
+1. **The Docker image had never actually built.** There was no `.dockerignore`, so
+   `COPY . .` dropped the host's `node_modules`, built for another platform and full
+   of pnpm symlinks, on top of the tree the image had just installed. pnpm then
+   tried to purge it and refused without a TTY. Step 9 claimed a working image on
+   the strength of the files existing.
+2. **`pnpm prune --prod` produced a container that died on its first import.** It
+   leaves packages in the store but strips the per-package symlinks, so
+   `packages/cli/node_modules` was empty and `@keetanetwork/keetanet-client` could
+   not be resolved. Replaced with `pnpm deploy`, which assembles a self-contained
+   tree.
+3. **Two workspace projects were both named `keeta-checkout`,** the root and the
+   CLI, which made `pnpm --filter=keeta-checkout deploy` ambiguous and is a latent
+   hazard for every other filtered command. The root is now
+   `keeta-checkout-workspace`.
+4. **The plugin claimed WordPress 6.4 and WooCommerce 9.4.** WooCommerce 11.2.1
+   requires WordPress 7.0, so the stated floor was a configuration the plugin cannot
+   run in. Corrected to 7.0 and 9.0, tested against 7.1 and 11.2.
+
+One more thing the run surfaced that is not a bug: **WooCommerce stores prices at
+two decimals by default**, so a 0.001 product became 0.00 and the gateway correctly
+refused to create a session for a zero total. The dev shop prices its test item at
+0.01 instead. Worth knowing for anyone pricing in a token where small amounts
+matter.
 
 ## Consequences
 
