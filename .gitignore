@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Secrets. `.env.test` holds the dev wallet seeds and must never be committed,
+# even though those wallets only ever hold test-network KTA.
+.env
+.env.*
+!.env.*.example
+
+# Local session databases
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.db
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# pnpm
+.pnpm-store/

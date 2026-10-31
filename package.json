@@ -1,0 +1,38 @@
+{
+  "name": "keeta-checkout",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Accept Keeta payments on your website: Stripe-shaped API, drop-in pay button, webhooks.",
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=24.14.1"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "wallets:create": "tsx tools/create-test-wallets.ts",
+    "wallets:fund": "tsx tools/fund-test-wallets.ts",
+    "wallets:status": "tsx tools/wallet-status.ts",
+    "build": "pnpm -r build",
+    "cli": "tsx packages/cli/src/cli-dev.ts",
+    "fixtures": "tsx tools/webhook-fixtures.ts",
+    "test:php": "docker run --rm -v \"$PWD:/app\" -w /app php:8.3-cli php plugins/woocommerce/tests/run-tests.php"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@keetanetwork/anchor": "0.0.105",
+    "@keetanetwork/keetanet-client": "0.18.8",
+    "@types/node": "^24.9.1",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.0",
+    "happy-dom": "^21.0.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vitest": "^3.2.4"
+  }
+}

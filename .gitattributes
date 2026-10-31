@@ -1,0 +1,16 @@
+# Store every text file with LF, whatever the committer's platform.
+#
+# Without this, a commit from Windows stores CRLF, and the Dockerfile and the PHP
+# files then arrive with Windows endings for everyone who clones on Linux.
+* text=auto eol=lf
+
+# Binary, so Git never tries to translate them.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Generated, and noisy in a diff.
+pnpm-lock.yaml -diff linguist-generated
+plugins/woocommerce/tests/fixtures.json linguist-generated

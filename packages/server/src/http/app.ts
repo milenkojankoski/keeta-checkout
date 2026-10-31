@@ -1,0 +1,441 @@
+/**
+ * The checkout HTTP API.
+ *
+ * Routes, and who may call them:
+ *
+ * | Route | Auth |
+ * | --- | --- |
+ * | `POST /api/sessions` | merchant API key |
+ * | `GET /api/sessions/:id` | session id (payer-safe view) |
+ * | `GET /api/sessions/:id?view=merchant` | merchant API key (adds the reference) |
+ * | `POST /api/sessions/:id/cancel` | session id |
+ * | `GET /api/sessions/:id/events` | session id (server-sent events) |
+ * | `GET /api/tokens` | merchant API key |
+ * | `GET /health` | open |
+ *
+ * `uri`, `qrSvg` and `hostedUrl` join the session response in step 4. The shape of
+ * everything else is settled here, so the button and the plugins can be written
+ * against it.
+ */
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import { EXPLORER_URL } from '../config.ts';
+import { CheckoutError } from '../errors.ts';
+import { PaymentRequestError, renderQrSvg } from '../payment-request.ts';
+import type { CheckoutService } from '../sessions/service.ts';
+import { REFUNDABLE_DISPOSITIONS, type PaymentDisposition } from '../sessions/store.ts';
+import type { DeliveryStatus } from '../webhooks/types.ts';
+import { newNonce, payPageCsp, renderPayPage } from './pay-page.ts';
+import type { Session } from '../sessions/types.ts';
+import { requireApiKey } from './auth.ts';
+
+/** Largest JSON body accepted. A session request is a few hundred bytes. */
+const BODY_LIMIT = '16kb';
+
+/** Comment sent down an idle event stream, to stop proxies closing it. */
+const SSE_HEARTBEAT_MS = 25_000;
+
+export interface CreateAppOptions {
+  service: CheckoutService;
+  /**
+   * Sweep expired sessions on this interval, so a session nobody reads still
+   * expires and still fires its event. `0` disables the timer; tests drive
+   * `sweepExpired()` directly.
+   */
+  sweepIntervalMs?: number;
+  /** Where to log unexpected failures. Defaults to `console`. */
+  log?: Pick<Console, 'error'>;
+  /** Shown as the heading on the hosted pay page. Defaults to "Pay with Keeta". */
+  merchantName?: string | undefined;
+}
+
+export interface CheckoutApp {
+  app: Express;
+  /** Stop the sweep timer. Call before letting the process exit. */
+  close(): void;
+}
+
+export function createApp(options: CreateAppOptions): CheckoutApp {
+  const { service } = options;
+  const log = options.log ?? console;
+  const app = express();
+
+  app.disable('x-powered-by');
+  // `strict: false` so a body that is valid JSON but not an object (a bare string,
+  // a number, `null`) reaches our own validator and gets the same BODY_INVALID code
+  // as any other wrong shape, instead of body-parser's generic parse failure.
+  app.use(express.json({ limit: BODY_LIMIT, strict: false }));
+
+  const merchantOnly = requireApiKey({ apiKeys: service.config.apiKeys });
+
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', network: service.config.network });
+  });
+
+  app.get('/api/tokens', merchantOnly, async (_req, res, next) => {
+    try {
+      const tokens = await service.acceptedTokens();
+      res.json({
+        network: service.config.network,
+        tokens: tokens.map((token) => ({
+          ticker: token.ticker,
+          address: token.address,
+          decimals: token.decimals,
+          name: token.name,
+          openToAnyHolder: token.openToAnyHolder
+        }))
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The payments ledger: every inbound send the watcher has seen and what it was.
+  // `?disposition=underpaid,late` narrows to what needs refunding.
+  app.get('/api/payments', merchantOnly, async (req, res, next) => {
+    try {
+      const dispositionParam = typeof req.query.disposition === 'string' ? req.query.disposition : undefined;
+      const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
+      const limitParam = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      if (limitParam !== undefined && (!Number.isInteger(limitParam) || limitParam < 1 || limitParam > 1000)) {
+        throw CheckoutError.invalid('LIMIT_INVALID', 'limit must be a whole number from 1 to 1000', 'limit');
+      }
+
+      const payments = await service.store.listPayments({
+        ...(dispositionParam === undefined ? {} : { dispositions: dispositionParam.split(',').map((d) => d.trim()).filter(Boolean) as PaymentDisposition[] }),
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(limitParam === undefined ? {} : { limit: limitParam })
+      });
+
+      res.json({
+        payments: payments.map((payment) => ({
+          blockHash: payment.blockHash,
+          operationIndex: payment.operationIndex,
+          from: payment.from,
+          to: payment.to,
+          tokenAddress: payment.tokenAddress,
+          amount: payment.amount.toString(),
+          external: payment.external,
+          blockDate: new Date(payment.blockDate).toISOString(),
+          sessionId: payment.sessionId,
+          disposition: payment.disposition,
+          refundable: REFUNDABLE_DISPOSITIONS.has(payment.disposition),
+          observedAt: new Date(payment.observedAt).toISOString(),
+          explorerUrl: `${EXPLORER_URL[service.config.network]}/block/${payment.blockHash}`
+        }))
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Webhook delivery history, so a merchant can see what was sent, what failed, and
+  // what gave up. Payloads and signing secrets are not included: the payload may be
+  // large and the merchant already received it, and the secret is never echoed.
+  app.get('/api/webhook-deliveries', merchantOnly, async (req, res, next) => {
+    try {
+      const statusParam = typeof req.query.status === 'string' ? req.query.status : undefined;
+      const eventId = typeof req.query.eventId === 'string' ? req.query.eventId : undefined;
+      const limitParam = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      if (limitParam !== undefined && (!Number.isInteger(limitParam) || limitParam < 1 || limitParam > 1000)) {
+        throw CheckoutError.invalid('LIMIT_INVALID', 'limit must be a whole number from 1 to 1000', 'limit');
+      }
+
+      const deliveries = await service.store.listDeliveries({
+        ...(statusParam === undefined
+          ? {}
+          : { statuses: statusParam.split(',').map((s) => s.trim()).filter(Boolean) as DeliveryStatus[] }),
+        ...(eventId === undefined ? {} : { eventId }),
+        ...(limitParam === undefined ? {} : { limit: limitParam })
+      });
+
+      res.json({
+        deliveries: deliveries.map((delivery) => ({
+          id: delivery.id,
+          eventId: delivery.eventId,
+          eventType: delivery.eventType,
+          endpointUrl: delivery.endpointUrl,
+          status: delivery.status,
+          attempts: delivery.attempts,
+          nextAttemptAt: delivery.status === 'pending' ? new Date(delivery.nextAttemptAt).toISOString() : null,
+          lastError: delivery.lastError,
+          lastStatusCode: delivery.lastStatusCode,
+          createdAt: new Date(delivery.createdAt).toISOString(),
+          updatedAt: new Date(delivery.updatedAt).toISOString(),
+          deliveredAt: delivery.deliveredAt === null ? null : new Date(delivery.deliveredAt).toISOString()
+        }))
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/sessions', merchantOnly, async (req, res, next) => {
+    try {
+      const body = asRecord(req.body as unknown);
+      const session = await service.createSession({
+        amount: asString(body.amount),
+        currency: asString(body.currency),
+        orderId: asString(body.orderId),
+        successUrl: asString(body.successUrl),
+        cancelUrl: asString(body.cancelUrl),
+        ...(body.expiresIn === undefined ? {} : { expiresIn: asExpiresIn(body.expiresIn) })
+      });
+      res.status(201).json(service.toMerchantView(session));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/sessions/:id', async (req, res, next) => {
+    try {
+      const session = await service.getSession(param(req, 'id'));
+      if (req.query.view === 'merchant') {
+        // The merchant view carries the payment reference, so it needs the key.
+        merchantOnly(req, res, (error?: unknown) => {
+          if (error !== undefined) {
+            next(error);
+            return;
+          }
+          res.json(service.toMerchantView(session));
+        });
+        return;
+      }
+      res.json(service.toPublicView(session));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/sessions/:id/cancel', async (req, res, next) => {
+    try {
+      const session = await service.cancelSession(param(req, 'id'));
+      res.json(service.toPublicView(session));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Served as an image so a pay page can use `<img src="…/qr.svg">` with no
+  // JavaScript, and so a ~6 KB SVG is fetched once instead of riding along on every
+  // status payload and every event.
+  app.get('/api/sessions/:id/qr.svg', async (req, res, next) => {
+    try {
+      const session = await service.getSession(param(req, 'id'));
+      const svg = await renderQrSvg(service.paymentUriFor(session));
+      res.type('image/svg+xml');
+      // The URI is fixed for the life of the session, so the image is immutable.
+      // `private` because the URL embeds a session capability.
+      res.set('Cache-Control', 'private, max-age=300, immutable');
+      res.send(svg);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The hosted pay page. Public by session id, like the other payer routes, and
+  // built to work with JavaScript switched off.
+  app.get('/pay/:id', async (req, res, next) => {
+    try {
+      const session = await service.getSession(param(req, 'id'));
+      const nonce = newNonce();
+      res.type('html');
+      res.set('Content-Security-Policy', payPageCsp(nonce));
+      res.set('Referrer-Policy', 'no-referrer');
+      res.set('X-Content-Type-Options', 'nosniff');
+      // A pay page must never be cached: its status changes.
+      res.set('Cache-Control', 'no-store');
+      res.send(
+        renderPayPage({
+          session: service.toPublicView(session),
+          nonce,
+          ...(options.merchantName === undefined ? {} : { merchantName: options.merchantName })
+        })
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The no-JavaScript cancel path: a form POST, then back to the shop. Separate
+  // from the JSON route so a browser without fetch still lands somewhere useful.
+  app.post('/pay/:id/cancel', express.urlencoded({ extended: false }), async (req, res, next) => {
+    try {
+      const id = param(req, 'id');
+      // Read first, so an already-paid session returns the shopper to the success
+      // page rather than showing them an error they cannot act on.
+      const before = await service.getSession(id);
+      const session = before.status === 'open' ? await service.cancelSession(id) : before;
+      res.redirect(303, session.status === 'paid' ? session.successUrl : session.cancelUrl);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/sessions/:id/events', async (req, res, next) => {
+    try {
+      await streamSessionEvents(service, req, res);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.use((req, res, next) => {
+    if (res.headersSent) {
+      next();
+      return;
+    }
+    res.status(404).json(CheckoutError.notFound(`no route ${req.method} ${req.path}`).toJSON());
+  });
+
+  // Four parameters: express identifies an error handler by arity, so `_next` must
+  // stay in the signature even though it is never called.
+  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (res.headersSent) {
+      // An event stream already started; nothing useful can be sent now.
+      res.end();
+      return;
+    }
+
+    if (error instanceof CheckoutError) {
+      res.status(error.status).json(error.toJSON());
+      return;
+    }
+
+    // A session whose URI or QR cannot be built is a server-side problem: the
+    // address and amount were validated when the session was created.
+    if (error instanceof PaymentRequestError) {
+      log.error('[keeta-checkout] payment request failed', error);
+      const failed = CheckoutError.internal('could not build this payment request');
+      res.status(failed.status).json(failed.toJSON());
+      return;
+    }
+
+    // A malformed JSON body surfaces as a SyntaxError from express.json().
+    if (error instanceof SyntaxError && 'body' in error) {
+      const bad = CheckoutError.invalid('MALFORMED_JSON', 'the request body is not valid JSON');
+      res.status(bad.status).json(bad.toJSON());
+      return;
+    }
+
+    // Anything else is a bug or an outage. Log it in full, tell the client nothing.
+    log.error('[keeta-checkout] unhandled error', error);
+    const internal = CheckoutError.internal();
+    res.status(internal.status).json(internal.toJSON());
+  });
+
+  const sweepIntervalMs = options.sweepIntervalMs ?? 30_000;
+  const sweepTimer =
+    sweepIntervalMs > 0
+      ? setInterval(() => {
+          void service.sweepExpired().catch((error: unknown) => {
+            log.error('[keeta-checkout] sweep failed', error);
+          });
+        }, sweepIntervalMs)
+      : undefined;
+  // Never hold the process open just to sweep.
+  sweepTimer?.unref();
+
+  return {
+    app,
+    close(): void {
+      if (sweepTimer !== undefined) clearInterval(sweepTimer);
+    }
+  };
+}
+
+/**
+ * Stream one session's status as server-sent events.
+ *
+ * Sends the current state immediately, so a client that connects after the payment
+ * still learns it is paid, then one event per change.
+ *
+ * The stream closes as soon as the session stops being `open`, which is a different
+ * question from whether its status is terminal in the state machine. An `expired`
+ * session may still become `unmatched` if a late payment turns up, but the payer
+ * watching this stream has nothing further to learn, and holding the connection
+ * open for an outcome only the merchant acts on would leak a socket per dead
+ * session.
+ */
+async function streamSessionEvents(service: CheckoutService, req: Request, res: Response): Promise<void> {
+  const id = param(req, 'id');
+  const session = await service.getSession(id); // 404s before any stream starts
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    // Nginx and friends buffer text/event-stream unless told otherwise.
+    'X-Accel-Buffering': 'no'
+  });
+
+  const send = (event: string, data: unknown): void => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  let closed = false;
+  const finish = (): void => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    unsubscribe();
+    res.end();
+  };
+
+  const heartbeat = setInterval(() => {
+    res.write(': keep-alive\n\n');
+  }, SSE_HEARTBEAT_MS);
+  heartbeat.unref();
+
+  const unsubscribe = service.onSessionChange(id, ({ session: changed }) => {
+    send('session', service.toPublicView(changed));
+    if (!awaitingPayment(changed)) finish();
+  });
+
+  req.on('close', finish);
+
+  send('session', service.toPublicView(session));
+  if (!awaitingPayment(session)) finish();
+}
+
+/**
+ * A required path parameter. Express types `req.params` with an index signature, so
+ * under `noUncheckedIndexedAccess` every lookup is possibly `undefined`; a route that
+ * declares `:id` always has one, and a missing one is a routing bug, not bad input.
+ */
+function param(req: Request, name: string): string {
+  const value = req.params[name];
+  // Express types a parameter as `string | string[]`, the array form being for
+  // repeated patterns. Our routes declare `:id` once, so anything else is a
+  // routing bug rather than bad input.
+  /* c8 ignore next -- unreachable while the route pattern declares one `:id`. */
+  if (typeof value !== 'string') throw CheckoutError.internal(`route parameter ${name} is missing`);
+  return value;
+}
+
+/** Whether a payer watching this session can still expect it to be paid. */
+function awaitingPayment(session: Session): boolean {
+  return session.status === 'open';
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw CheckoutError.invalid('BODY_INVALID', 'the request body must be a JSON object');
+  }
+  return value as Record<string, unknown>;
+}
+
+/**
+ * Pass strings through and reject everything else. A number for `amount` is refused
+ * rather than coerced: `12.10` as JSON is a float, and the point of taking a string
+ * is that the merchant's exact digits survive the trip.
+ */
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function asExpiresIn(value: unknown): number {
+  if (typeof value !== 'number') {
+    throw CheckoutError.invalid('EXPIRES_IN_INVALID', 'expiresIn must be a number of seconds', 'expiresIn');
+  }
+  return value;
+}

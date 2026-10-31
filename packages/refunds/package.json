@@ -1,0 +1,15 @@
+{
+  "name": "@keeta-checkout/refunds",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@keetanetwork/anchor": "0.0.105",
+    "@keetanetwork/keetanet-client": "0.18.8"
+  }
+}

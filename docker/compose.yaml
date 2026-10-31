@@ -1,0 +1,41 @@
+# A single-service deployment of Keeta Checkout.
+#
+#   cp .env.example .env     # or: keeta-checkout init
+#   docker compose -f docker/compose.yaml up --build
+#
+# One container is the whole deployment: the API, the hosted pay page, the chain
+# watcher and the webhook dispatcher all run in this process. There is nothing to
+# scale horizontally yet, because the watcher and the dispatcher each expect to be
+# the only one of their kind against a given database.
+
+services:
+  checkout:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    # The configuration, including the API keys and webhook secrets. Never baked
+    # into the image.
+    env_file:
+      - ../.env
+    ports:
+      - '${PORT:-3000}:3000'
+    volumes:
+      # The session store and the payments ledger. Losing this loses the record of
+      # which orders were paid, so back it up like any other order database.
+      - keeta-checkout-data:/data
+    restart: unless-stopped
+    # Give the server time to drain the watcher and flush queued webhooks.
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  keeta-checkout-data:
