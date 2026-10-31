@@ -157,3 +157,10 @@ with a `refundable` flag.
 - **Back up the database.** It is the record of which orders were paid.
 - **One server per database.** The watcher and the webhook dispatcher each expect to
   be the only one of their kind.
+- **Rate limit the payer routes at your proxy.** `/pay/:id`, `/api/sessions/:id` and
+  `/qr.svg` are authorised by the session id alone, which is how a shopper can open a
+  pay page without logging in, and which also means anyone who can reach your
+  checkout can mint one. The server caps event streams at 20 per session but ships no
+  rate limiter of its own, on purpose: a limit inside the application tempts you into
+  thinking you do not need one in front of it. Put a modest per-IP limit on those
+  three paths wherever you terminate TLS.

@@ -80,6 +80,15 @@ export class CheckoutError extends Error {
     return new CheckoutError('conflict_error', code, message);
   }
 
+  /**
+   * 429. The `rate_limit_error` type has existed since the error shapes were
+   * settled, because merchants expect it from a payments API; this is the first
+   * caller, the cap on concurrent event streams per session.
+   */
+  static tooManyRequests(code: string, message: string): CheckoutError {
+    return new CheckoutError('rate_limit_error', code, message);
+  }
+
   static internal(message = 'the server could not complete this request'): CheckoutError {
     return new CheckoutError('api_error', 'INTERNAL', message);
   }

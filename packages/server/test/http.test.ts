@@ -1,6 +1,6 @@
 import { once } from 'node:events';
 import type { Server } from 'node:http';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { createApp, type CheckoutApp } from '../src/http/app.ts';
 import { CheckoutService } from '../src/sessions/service.ts';
@@ -415,6 +415,56 @@ describe('GET /api/sessions/:id/events', () => {
     expect(payload).toContain(mine.body.reference);
     expect(payload).not.toContain(theirs.body.reference);
     expect(payload).not.toContain(theirs.body.id);
+  });
+
+  it('caps concurrent streams per session and releases a slot on close', async () => {
+    // A session id is something anyone who reaches a checkout can mint, so the
+    // number of sockets one can pin open has to be bounded somewhere.
+    const created = await createSession();
+    const id = created.body.id as string;
+
+    const controllers: AbortController[] = [];
+    const open = async (): Promise<Response> => {
+      const controller = new AbortController();
+      controllers.push(controller);
+      return fetch(`${origin}/api/sessions/${id}/events`, { signal: controller.signal });
+    };
+
+    try {
+      const accepted = await Promise.all(Array.from({ length: 20 }, open));
+      expect(accepted.every((response) => response.status === 200)).toBe(true);
+
+      const refused = await open();
+      expect(refused.status).toBe(429);
+      const body = (await refused.json()) as { error: { type: string; code: string } };
+      expect(body.error.type).toBe('rate_limit_error');
+      expect(body.error.code).toBe('TOO_MANY_STREAMS');
+
+      // Dropping one must free exactly one, or a shopper reloading their pay page
+      // twenty times would lock themselves out of their own session for good.
+      controllers[0]?.abort();
+      await vi.waitFor(async () => {
+        const retry = await open();
+        expect(retry.status).toBe(200);
+        await retry.body?.cancel();
+      });
+    } finally {
+      for (const controller of controllers) controller.abort();
+    }
+  });
+
+  it('sets nosniff and no-referrer on the JSON API, not just the pay page', async () => {
+    // Session ids travel in these URLs, and a JSON body a browser sniffs as HTML is
+    // an XSS in waiting. Checked on an error response too: the headers go on in
+    // middleware precisely so no route or error path can forget them.
+    const ok = await server().get('/health');
+    expect(ok.headers['x-content-type-options']).toBe('nosniff');
+    expect(ok.headers['referrer-policy']).toBe('no-referrer');
+
+    const missing = await server().get('/api/sessions/cs_nope');
+    expect(missing.status).toBe(404);
+    expect(missing.headers['x-content-type-options']).toBe('nosniff');
+    expect(missing.headers['referrer-policy']).toBe('no-referrer');
   });
 });
 

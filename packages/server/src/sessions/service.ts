@@ -413,7 +413,19 @@ export class CheckoutService {
     return `${base}/block/${session.blockHash}`;
   }
 
-  /** The payer-safe projection. Never includes the payment reference. */
+  /**
+   * The payer-safe projection.
+   *
+   * It carries no `reference` field, but it is not reference-free: `uri` is the
+   * `keeta://` request, and the reference is its `external` parameter. That is not a
+   * leak, it is the mechanism. The payer has to put the reference in their own SEND,
+   * so a payer who cannot see it cannot pay.
+   *
+   * What actually protects a session is the session id, which is 128 random bits and
+   * is the capability for this route, the event stream and cancellation alike. Anyone
+   * who can read the reference already holds the id, and so can already do everything
+   * the reference would let them do. Treat the id as the secret; see `refs.ts`.
+   */
   toPublicView(session: Session): PublicSessionView {
     return {
       id: session.id,
@@ -442,7 +454,14 @@ export class CheckoutService {
     };
   }
 
-  /** The merchant projection: adds the payment reference, which a payer must not see. */
+  /**
+   * The merchant projection.
+   *
+   * It lifts the reference out of the URI into a field of its own, and adds the two
+   * timestamps a merchant reconciles against. None of it is secret from the payer,
+   * who can read the reference off the URI; it is here because a merchant matching
+   * their own records should not have to parse a payment URI to do it.
+   */
   toMerchantView(session: Session): MerchantSessionView {
     return {
       ...this.toPublicView(session),

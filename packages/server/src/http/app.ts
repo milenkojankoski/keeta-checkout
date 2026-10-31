@@ -34,6 +34,24 @@ const BODY_LIMIT = '16kb';
 /** Comment sent down an idle event stream, to stop proxies closing it. */
 const SSE_HEARTBEAT_MS = 25_000;
 
+/**
+ * Concurrent event streams allowed per session.
+ *
+ * A held stream costs a socket and about 12 KB, measured, and the server stays
+ * responsive with thousands open, so this is not a cliff being guarded. It is a
+ * bound: without one, the number of streams a single session id can pin open is
+ * limited only by the attacker's own sockets, and a session id is something anyone
+ * who can reach a shop's checkout can mint.
+ *
+ * Twenty is far above honest use. A shopper has one pay page, perhaps a few tabs,
+ * and `EventSource` reconnects rather than stacking connections, with `req.on`
+ * `('close')` releasing a slot as soon as a socket drops.
+ *
+ * This is a backstop, not a substitute for a rate limit at the edge. See
+ * `docs/decisions/0013-security-review.md`.
+ */
+const MAX_STREAMS_PER_SESSION = 20;
+
 export interface CreateAppOptions {
   service: CheckoutService;
   /**
@@ -60,6 +78,17 @@ export function createApp(options: CreateAppOptions): CheckoutApp {
   const app = express();
 
   app.disable('x-powered-by');
+
+  // Applied to every response, including the JSON API and the error paths. The pay
+  // page sets a full CSP of its own on top of this; these two are the ones that
+  // matter for an API, so they belong where no route can forget them.
+  app.use((_req, res, next) => {
+    // A JSON body a browser decides to sniff as HTML is an XSS in waiting.
+    res.set('X-Content-Type-Options', 'nosniff');
+    // Session ids live in these URLs. None of them should travel in a Referer.
+    res.set('Referrer-Policy', 'no-referrer');
+    next();
+  });
   // `strict: false` so a body that is valid JSON but not an object (a bare string,
   // a number, `null`) reaches our own validator and gets the same BODY_INVALID code
   // as any other wrong shape, instead of body-parser's generic parse failure.
@@ -271,9 +300,13 @@ export function createApp(options: CreateAppOptions): CheckoutApp {
     }
   });
 
+  // One entry per session with at least one stream open; deleted on the last close,
+  // so an idle server holds nothing.
+  const openStreams = new Map<string, number>();
+
   app.get('/api/sessions/:id/events', async (req, res, next) => {
     try {
-      await streamSessionEvents(service, req, res);
+      await streamSessionEvents(service, req, res, openStreams);
     } catch (error) {
       next(error);
     }
@@ -356,9 +389,25 @@ export function createApp(options: CreateAppOptions): CheckoutApp {
  * open for an outcome only the merchant acts on would leak a socket per dead
  * session.
  */
-async function streamSessionEvents(service: CheckoutService, req: Request, res: Response): Promise<void> {
+async function streamSessionEvents(
+  service: CheckoutService,
+  req: Request,
+  res: Response,
+  openStreams: Map<string, number>
+): Promise<void> {
   const id = param(req, 'id');
   const session = await service.getSession(id); // 404s before any stream starts
+
+  const held = openStreams.get(id) ?? 0;
+  if (held >= MAX_STREAMS_PER_SESSION) {
+    // 429 rather than 503: the limit is per session, so it is this caller's own
+    // doing, and the right response is for them to use the stream they already have.
+    throw CheckoutError.tooManyRequests(
+      'TOO_MANY_STREAMS',
+      `this session already has ${MAX_STREAMS_PER_SESSION} event streams open; close one before opening another`
+    );
+  }
+  openStreams.set(id, held + 1);
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -378,6 +427,11 @@ async function streamSessionEvents(service: CheckoutService, req: Request, res: 
     closed = true;
     clearInterval(heartbeat);
     unsubscribe();
+    // Release the slot before ending the response, so a client that reconnects the
+    // instant it sees the stream close never races its own old connection.
+    const remaining = (openStreams.get(id) ?? 1) - 1;
+    if (remaining > 0) openStreams.set(id, remaining);
+    else openStreams.delete(id);
     res.end();
   };
 

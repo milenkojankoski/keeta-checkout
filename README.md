@@ -19,7 +19,7 @@ watching them get credited. Start at [`docs/quickstart.md`](docs/quickstart.md),
 There is a **WooCommerce plugin** in `plugins/woocommerce/`, and any shop with a
 backend can integrate directly with a session, a script tag and the pay button.
 
-Still to come: the reference integration (step 10), a security review (step 12),
+Still to come: the reference integration (step 10),
 refunds (step 13), and the Shopify app (step 14).
 
 ---
@@ -228,6 +228,9 @@ Networks: `test` (ID 1413829460, faucet at <https://faucet.test.keeta.com>) for 
 5. Webhooks are signed; the merchant's example code verifies the signature before trusting `paid`.
 6. One publish at a time per signing account in the refunds process, with `recover()` and a `getHistory()` check after any ambiguous failure.
 7. The pay page shows network, token, recipient and amount before the wallet is opened, so the payer confirms exactly what moves.
+8. **The operator rate limits at the edge.** The payer routes are authorised by the session id alone, and on a live shop anyone who can reach a checkout can mint one. The server bounds what it can (20 event streams per session) but deliberately ships no rate limiter, because one inside the application invites operators to believe they do not need one in front of it. Put a limit on `/pay/`, `/api/sessions/` and `/qr.svg` at the proxy that already terminates TLS.
+
+Reviewed against the code on 2026-10-31: `docs/decisions/0013-security-review.md` records the evidence for each rule, what was fixed, and what was investigated and found not to be a problem.
 
 ## 12. Scope
 
@@ -274,8 +277,8 @@ Setup instructions and the current state of the test wallets are in
 | 8 | Hosted pay page and `<keeta-pay-button>` web component, React wrapper, polling and SSE, copy-address fallback | Opus | UI work. **Done 2026-10-30**: `packages/server/src/http/pay-page.ts`, `packages/button/src/*`, 392 tests, `docs/decisions/0010` |
 | 9 | `npx keeta-checkout init`, Docker image, docs site | Opus | Tooling. **Done 2026-10-30**: `packages/cli`, esbuild bundles, `docker/`, `docs/quickstart.md`, 416 tests, `docs/decisions/0011`. No generated docs site; see that record |
 | 10 | Reference integration into the Airbnb webapp: "Mit Keeta bezahlen" next to "Sofort buchen", watcher replaces the Stripe webhook for that path | Opus, Fable review | The booking state machine already exists; Fable checks the hold-and-expiry interaction |
-| 11 | WooCommerce plugin | Opus | PHP gateway against the stable REST contract. **Done 2026-10-30**: `plugins/woocommerce/`, 122 PHP assertions including 12 cross-language signature fixtures, `docs/decisions/0012`. Not yet run inside WordPress |
-| 12 | **Security review** of the whole v1 against section 11, and a review of SDK usage against the current anchor source | **Fable** | Last gate before publishing |
+| 11 | WooCommerce plugin | Opus | PHP gateway against the stable REST contract. **Done 2026-10-30**: `plugins/woocommerce/`, 122 PHP assertions including 12 cross-language signature fixtures, `docs/decisions/0012`. Run inside WordPress 7.1.4 with WooCommerce 11.2.1; the block checkout needed its own `AbstractPaymentMethodType` registration |
+| 12 | **Security review** of the whole v1 against section 11, and a review of SDK usage against the current anchor source | **Fable** (run as Opus; see the caveat in the ADR) | **Done 2026-10-31**: all seven rules hold, advisories 8 down to 2 with both remainders unreachable inside Keeta's own tree, event streams now capped, `nosniff` and `no-referrer` on the API, `docs/decisions/0013` |
 | 13 | **Refunds process (v2):** storage-account vault, `SEND_ON_BEHALF` delegation scoped to the payout token, daily cap that fails closed, `recover()` after ambiguous failures | **Fable** | Wrong ACLs leak the merchant's funds |
 | 14 | Shopify app, multi-token acceptance with FX quotes, dashboard | Opus | Product work on top of a proven core |
 | 15 | x402 mode | **Fable** first spike, then Opus | The `@x402/keeta` facilitator flow is new and thinly documented |

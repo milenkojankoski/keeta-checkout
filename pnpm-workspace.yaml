@@ -10,3 +10,10 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   secp256k1: true
+
+# minimatch <11.0.1 has a glob-amplification DoS advisory. It reaches us only
+# through eslint, which is a devDependency and never ships, but a clean audit on a
+# public repository is worth more than the two lines this costs. eslint uses plain
+# globbing, which 11.x keeps compatible.
+overrides:
+  minimatch: "^11.0.1"

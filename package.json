@@ -23,16 +23,17 @@
     "test:php": "docker run --rm -v \"$PWD:/app\" -w /app php:8.3-cli php plugins/woocommerce/tests/run-tests.php"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.0",
+    "@eslint/js": "^10.0.1",
     "@keetanetwork/anchor": "0.0.105",
     "@keetanetwork/keetanet-client": "0.18.8",
     "@types/node": "^24.9.1",
+    "@vitest/coverage-v8": "^5.0.5",
     "esbuild": "^0.28.2",
-    "eslint": "^9.39.0",
+    "eslint": "^10.13.0",
     "happy-dom": "^21.0.4",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.0",
-    "vitest": "^3.2.4"
+    "vitest": "^5.0.5"
   }
 }
