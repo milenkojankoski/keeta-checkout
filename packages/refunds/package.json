@@ -1,6 +1,6 @@
 {
   "name": "@keeta-checkout/refunds",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@keetanetwork/anchor": "0.0.105",
-    "@keetanetwork/keetanet-client": "0.18.8"
+    "@keetanetwork/keetanet-client": "0.18.8",
+    "@keeta-checkout/server": "workspace:*"
   }
 }

@@ -23,6 +23,7 @@
  * re-scanning the chain after a restart harmless.
  */
 import type { DeliveriesQuery, DeliveryStatus, WebhookDelivery } from '../webhooks/types.ts';
+import type { NewRefund, Refund, RefundResultUpdate, RefundsQuery } from '../refunds/types.ts';
 import type { Session, SessionStatus } from './types.ts';
 
 export type StoreErrorCode =
@@ -30,7 +31,8 @@ export type StoreErrorCode =
   | 'DUPLICATE_ID'
   | 'DUPLICATE_REFERENCE'
   | 'INVALID_TRANSITION'
-  | 'DELIVERY_NOT_FOUND';
+  | 'DELIVERY_NOT_FOUND'
+  | 'REFUND_NOT_FOUND';
 
 /** What one delivery attempt changed. */
 export interface DeliveryResultUpdate {
@@ -235,8 +237,82 @@ export interface SessionStore {
   /** Deliveries, newest first. */
   listDeliveries(query?: DeliveriesQuery): Promise<WebhookDelivery[]>;
 
+  // ---- the refund ledger (docs/decisions/0014) -------------------------------
+
+  /**
+   * Create a refund for a payment. One refund per payment: if one already exists
+   * the existing row comes back with `created: false` and nothing is written, so
+   * a repeated request, an API retry and the auto-refund path cannot between them
+   * produce two.
+   */
+  createRefund(refund: NewRefund): Promise<{ created: boolean; refund: Refund }>;
+
+  getRefund(id: string): Promise<Refund | undefined>;
+
+  getRefundForPayment(blockHash: string, operationIndex: number): Promise<Refund | undefined>;
+
+  /** Refunds, newest first. */
+  listRefunds(query?: RefundsQuery): Promise<Refund[]>;
+
+  /**
+   * The next refund to publish, under the one-at-a-time rule.
+   *
+   * If any refund is already `publishing`, that row is returned with
+   * `claimed: false` and nothing changes: the caller must reconcile it against the
+   * chain before anything else is sent. Otherwise the oldest `requested` refund is
+   * moved to `publishing` with its attempt time set, in one transaction, and
+   * returned with `claimed: true`. Nothing to do returns undefined.
+   */
+  claimNextRefund(now: number): Promise<{ refund: Refund; claimed: boolean } | undefined>;
+
+  /**
+   * Record where a refund ended up. From `publishing` a refund may become
+   * `published`, `failed`, or `requested` again after reconciliation found nothing
+   * on chain; from `requested` it may only become `refused`. Anything else is an
+   * `INVALID_TRANSITION`.
+   */
+  recordRefundResult(id: string, result: RefundResultUpdate): Promise<Refund>;
+
+  /**
+   * Base units of one token that are `published` or `publishing` and whose attempt
+   * began at or after `since`. The daily-cap check counts money in flight as spent,
+   * because a refund that is publishing may land.
+   */
+  sumRefundedSince(tokenAddress: string, since: number): Promise<bigint>;
+
   /** Release any held resources. Safe to call twice. */
   close(): Promise<void>;
+}
+
+/** Which status changes the refund ledger accepts. */
+export function refundTransitionAllowed(from: Refund['status'], to: RefundResultUpdate['status']): boolean {
+  // `refused` from `publishing`: the row is claimed before the limits run, and a
+  // limit that says no does so before anything is sent.
+  if (from === 'publishing') return to === 'published' || to === 'failed' || to === 'requested' || to === 'refused';
+  if (from === 'requested') return to === 'refused';
+  return false;
+}
+
+/** Apply a recorded result to a refund row. Shared by every store so the rules live once. */
+export function applyRefundResult(refund: Refund, result: RefundResultUpdate): Refund {
+  if (!refundTransitionAllowed(refund.status, result.status)) {
+    throw new StoreError('INVALID_TRANSITION', `refund ${refund.id} cannot go from ${refund.status} to ${result.status}`);
+  }
+  const next: Refund = {
+    ...refund,
+    status: result.status,
+    updatedAt: result.at,
+    lastError: result.lastError === undefined ? refund.lastError : result.lastError
+  };
+  if (result.status === 'published') {
+    if (result.blockHash === undefined || result.blockHash === '') {
+      throw new StoreError('INVALID_TRANSITION', `refund ${refund.id} cannot be published without a block hash`);
+    }
+    next.blockHash = result.blockHash;
+    next.publishedAt = result.at;
+  }
+  if (result.status === 'requested') next.attemptStartedAt = null;
+  return next;
 }
 
 /** Copy a session so a caller cannot mutate what the store holds. */
@@ -312,6 +388,7 @@ export class MemorySessionStore implements SessionStore {
   readonly #payments = new Map<string, PaymentRow>();
   readonly #meta = new Map<string, string>();
   readonly #deliveries = new Map<string, WebhookDelivery>();
+  readonly #refunds = new Map<string, Refund>();
 
   async create(session: Session): Promise<Session> {
     if (this.#byId.has(session.id)) {
@@ -458,6 +535,82 @@ export class MemorySessionStore implements SessionStore {
   async getDelivery(id: string): Promise<WebhookDelivery | undefined> {
     const found = this.#deliveries.get(id);
     return found === undefined ? undefined : { ...found };
+  }
+
+  async createRefund(refund: NewRefund): Promise<{ created: boolean; refund: Refund }> {
+    const existing = await this.getRefundForPayment(refund.paymentBlockHash, refund.paymentOperationIndex);
+    if (existing !== undefined) return { created: false, refund: existing };
+    if (this.#refunds.has(refund.id)) throw new StoreError('DUPLICATE_ID', `refund ${refund.id} already exists`);
+    const row: Refund = {
+      ...refund,
+      status: 'requested',
+      attempts: 0,
+      attemptStartedAt: null,
+      blockHash: null,
+      lastError: null,
+      updatedAt: refund.createdAt,
+      publishedAt: null
+    };
+    this.#refunds.set(row.id, row);
+    return { created: true, refund: { ...row } };
+  }
+
+  async getRefund(id: string): Promise<Refund | undefined> {
+    const found = this.#refunds.get(id);
+    return found === undefined ? undefined : { ...found };
+  }
+
+  async getRefundForPayment(blockHash: string, operationIndex: number): Promise<Refund | undefined> {
+    for (const refund of this.#refunds.values()) {
+      if (refund.paymentBlockHash === blockHash && refund.paymentOperationIndex === operationIndex) return { ...refund };
+    }
+    return undefined;
+  }
+
+  async listRefunds(query: RefundsQuery = {}): Promise<Refund[]> {
+    const wanted = query.statuses === undefined ? undefined : new Set(query.statuses);
+    if (wanted?.size === 0) return [];
+    return [...this.#refunds.values()]
+      .filter((refund) => wanted === undefined || wanted.has(refund.status))
+      .filter((refund) => query.sessionId === undefined || refund.sessionId === query.sessionId)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, query.limit ?? 100)
+      .map((refund) => ({ ...refund }));
+  }
+
+  async claimNextRefund(now: number): Promise<{ refund: Refund; claimed: boolean } | undefined> {
+    const inFlight = [...this.#refunds.values()].find((refund) => refund.status === 'publishing');
+    if (inFlight !== undefined) return { refund: { ...inFlight }, claimed: false };
+
+    const next = [...this.#refunds.values()]
+      .filter((refund) => refund.status === 'requested')
+      .sort((a, b) => a.createdAt - b.createdAt)[0];
+    if (next === undefined) return undefined;
+
+    next.status = 'publishing';
+    next.attempts += 1;
+    next.attemptStartedAt = now;
+    next.updatedAt = now;
+    return { refund: { ...next }, claimed: true };
+  }
+
+  async recordRefundResult(id: string, result: RefundResultUpdate): Promise<Refund> {
+    const refund = this.#refunds.get(id);
+    if (refund === undefined) throw new StoreError('REFUND_NOT_FOUND', `no refund ${id}`);
+    const next = applyRefundResult(refund, result);
+    this.#refunds.set(id, next);
+    return { ...next };
+  }
+
+  async sumRefundedSince(tokenAddress: string, since: number): Promise<bigint> {
+    let total = 0n;
+    for (const refund of this.#refunds.values()) {
+      if (refund.tokenAddress !== tokenAddress) continue;
+      if (refund.status !== 'published' && refund.status !== 'publishing') continue;
+      if ((refund.attemptStartedAt ?? refund.createdAt) < since) continue;
+      total += refund.amount;
+    }
+    return total;
   }
 
   async listDeliveries(query: DeliveriesQuery = {}): Promise<WebhookDelivery[]> {

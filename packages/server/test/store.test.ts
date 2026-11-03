@@ -12,6 +12,7 @@ import { MemorySessionStore, StoreError, type PaymentRecord, type SessionStore }
 import { SqliteSessionStore } from '../src/sessions/sqlite-store.ts';
 import type { Session } from '../src/sessions/types.ts';
 import type { WebhookDelivery } from '../src/webhooks/types.ts';
+import type { NewRefund } from '../src/refunds/types.ts';
 import { KTA, MERCHANT_ADDRESS, PAYER_ADDRESS, USDC } from './support/fakes.ts';
 
 const BASE_TIME = Date.UTC(2026, 9, 30, 12, 0, 0);
@@ -500,6 +501,167 @@ describe.each(implementations)('%s payments ledger and meta', (_name, makeStore)
     ...overrides
   });
 
+  // ---- the refund ledger (docs/decisions/0014) -------------------------------
+
+  const refundRequest = (overrides: Partial<NewRefund> = {}): NewRefund => ({
+    id: 'rf_one',
+    paymentBlockHash: 'B1',
+    paymentOperationIndex: 0,
+    sessionId: 'cs_1',
+    to: PAYER_ADDRESS,
+    tokenAddress: USDC,
+    amount: 1_500_000n,
+    reason: 'duplicate',
+    origin: 'auto',
+    createdAt: BASE_TIME,
+    ...overrides
+  });
+
+  it('creates a refund as requested, with nothing attempted yet', async () => {
+    const { created, refund } = await open().createRefund(refundRequest());
+    expect(created).toBe(true);
+    expect(refund).toEqual({
+      ...refundRequest(),
+      status: 'requested',
+      attempts: 0,
+      attemptStartedAt: null,
+      blockHash: null,
+      lastError: null,
+      updatedAt: BASE_TIME,
+      publishedAt: null
+    });
+    expect(await store.getRefund('rf_one')).toEqual(refund);
+    expect(await store.getRefundForPayment('B1', 0)).toEqual(refund);
+    expect(await store.getRefund('rf_nope')).toBeUndefined();
+  });
+
+  it('allows one refund per payment, whoever asks second', async () => {
+    // The API retrying, the merchant clicking twice and the auto-refund path all
+    // land here; whichever came second gets the first row back, unchanged.
+    const first = await open().createRefund(refundRequest());
+    const second = await store.createRefund(refundRequest({ id: 'rf_two', origin: 'api', amount: 999n, createdAt: BASE_TIME + 5 }));
+    expect(second.created).toBe(false);
+    expect(second.refund).toEqual(first.refund);
+    expect(await store.listRefunds()).toHaveLength(1);
+  });
+
+  it('keeps bigint refund amounts beyond 2^63', async () => {
+    const huge = 987_654_321_000_000_000_000_000_000n;
+    await open().createRefund(refundRequest({ amount: huge, tokenAddress: KTA }));
+    expect((await store.getRefund('rf_one'))?.amount).toBe(huge);
+  });
+
+  it('claims the oldest requested refund and marks it publishing with its attempt time', async () => {
+    const s = open();
+    await s.createRefund(refundRequest({ id: 'rf_newer', paymentBlockHash: 'B2', createdAt: BASE_TIME + 10 }));
+    await s.createRefund(refundRequest({ id: 'rf_older', paymentBlockHash: 'B1', createdAt: BASE_TIME }));
+
+    const claim = await s.claimNextRefund(BASE_TIME + 100);
+    expect(claim?.claimed).toBe(true);
+    expect(claim?.refund.id).toBe('rf_older');
+    expect(claim?.refund.status).toBe('publishing');
+    expect(claim?.refund.attempts).toBe(1);
+    expect(claim?.refund.attemptStartedAt).toBe(BASE_TIME + 100);
+    expect((await s.getRefund('rf_older'))?.status).toBe('publishing');
+    expect((await s.getRefund('rf_newer'))?.status).toBe('requested');
+  });
+
+  it('refuses to claim a second refund while one is publishing', async () => {
+    // Rule 6: one publish at a time per account. A row left in `publishing` by a
+    // crash is handed back unclaimed, so the process reconciles it first.
+    const s = open();
+    await s.createRefund(refundRequest({ id: 'rf_a', paymentBlockHash: 'B1' }));
+    await s.createRefund(refundRequest({ id: 'rf_b', paymentBlockHash: 'B2', createdAt: BASE_TIME + 1 }));
+    await s.claimNextRefund(BASE_TIME + 100);
+
+    const blocked = await s.claimNextRefund(BASE_TIME + 200);
+    expect(blocked?.claimed).toBe(false);
+    expect(blocked?.refund.id).toBe('rf_a');
+    expect((await s.getRefund('rf_b'))?.status).toBe('requested');
+    expect((await s.getRefund('rf_a'))?.attempts).toBe(1);
+  });
+
+  it('returns undefined when nothing is waiting', async () => {
+    expect(await open().claimNextRefund(BASE_TIME)).toBeUndefined();
+  });
+
+  it('records a publish, a failure, and a reconciliation back to requested', async () => {
+    const s = open();
+    await s.createRefund(refundRequest({ id: 'rf_a', paymentBlockHash: 'B1' }));
+    await s.claimNextRefund(BASE_TIME + 100);
+    const published = await s.recordRefundResult('rf_a', { status: 'published', at: BASE_TIME + 150, blockHash: 'RB1' });
+    expect(published.status).toBe('published');
+    expect(published.blockHash).toBe('RB1');
+    expect(published.publishedAt).toBe(BASE_TIME + 150);
+    expect(published.updatedAt).toBe(BASE_TIME + 150);
+
+    await s.createRefund(refundRequest({ id: 'rf_b', paymentBlockHash: 'B2', createdAt: BASE_TIME + 1 }));
+    await s.claimNextRefund(BASE_TIME + 200);
+    const failed = await s.recordRefundResult('rf_b', { status: 'failed', at: BASE_TIME + 250, lastError: 'permissions' });
+    expect(failed.status).toBe('failed');
+    expect(failed.lastError).toBe('permissions');
+
+    await s.createRefund(refundRequest({ id: 'rf_c', paymentBlockHash: 'B3', createdAt: BASE_TIME + 2 }));
+    await s.claimNextRefund(BASE_TIME + 300);
+    const back = await s.recordRefundResult('rf_c', { status: 'requested', at: BASE_TIME + 400, lastError: 'nothing on chain' });
+    expect(back.status).toBe('requested');
+    expect(back.attemptStartedAt).toBeNull();
+    expect(back.attempts).toBe(1);
+    // and it can be claimed again, counting a second attempt
+    const again = await s.claimNextRefund(BASE_TIME + 500);
+    expect(again?.refund.id).toBe('rf_c');
+    expect(again?.refund.attempts).toBe(2);
+  });
+
+  it('refuses transitions the state machine does not allow', async () => {
+    const s = open();
+    await s.createRefund(refundRequest({ id: 'rf_a', paymentBlockHash: 'B1' }));
+    // requested -> published, skipping publishing
+    await expect(s.recordRefundResult('rf_a', { status: 'published', at: BASE_TIME, blockHash: 'X' })).rejects.toMatchObject({ code: 'INVALID_TRANSITION' });
+    // requested -> refused is the one allowed exit without a publish
+    const refused = await s.recordRefundResult('rf_a', { status: 'refused', at: BASE_TIME + 1, lastError: 'over the daily cap' });
+    expect(refused.status).toBe('refused');
+    // refused is final
+    await expect(s.recordRefundResult('rf_a', { status: 'requested', at: BASE_TIME + 2 })).rejects.toMatchObject({ code: 'INVALID_TRANSITION' });
+    // published needs a block hash
+    await s.createRefund(refundRequest({ id: 'rf_b', paymentBlockHash: 'B2' }));
+    await s.claimNextRefund(BASE_TIME + 10);
+    await expect(s.recordRefundResult('rf_b', { status: 'published', at: BASE_TIME + 11 })).rejects.toMatchObject({ code: 'INVALID_TRANSITION' });
+    // unknown id
+    await expect(s.recordRefundResult('rf_nope', { status: 'failed', at: BASE_TIME })).rejects.toMatchObject({ code: 'REFUND_NOT_FOUND' });
+  });
+
+  it('sums what went out, counting money in flight, per token, since a time', async () => {
+    const s = open();
+    await s.createRefund(refundRequest({ id: 'rf_a', paymentBlockHash: 'B1', amount: 100n }));
+    await s.createRefund(refundRequest({ id: 'rf_b', paymentBlockHash: 'B2', amount: 20n, createdAt: BASE_TIME + 1 }));
+    await s.createRefund(refundRequest({ id: 'rf_c', paymentBlockHash: 'B3', amount: 3n, tokenAddress: KTA, createdAt: BASE_TIME + 2 }));
+    await s.createRefund(refundRequest({ id: 'rf_d', paymentBlockHash: 'B4', amount: 1_000n, createdAt: BASE_TIME + 3 }));
+
+    await s.claimNextRefund(BASE_TIME + 1_000); // rf_a
+    await s.recordRefundResult('rf_a', { status: 'published', at: BASE_TIME + 1_100, blockHash: 'R1' });
+    await s.claimNextRefund(BASE_TIME + 2_000); // rf_b, left publishing: in flight counts
+    // rf_c is KTA, rf_d is still requested: neither counts for USDC
+    expect(await s.sumRefundedSince(USDC, BASE_TIME)).toBe(120n);
+    expect(await s.sumRefundedSince(USDC, BASE_TIME + 1_500)).toBe(20n);
+    expect(await s.sumRefundedSince(USDC, BASE_TIME + 2_500)).toBe(0n);
+    expect(await s.sumRefundedSince(KTA, BASE_TIME)).toBe(0n);
+  });
+
+  it('lists refunds newest first, filtered by status and session', async () => {
+    const s = open();
+    await s.createRefund(refundRequest({ id: 'rf_a', paymentBlockHash: 'B1', sessionId: 'cs_1', createdAt: BASE_TIME }));
+    await s.createRefund(refundRequest({ id: 'rf_b', paymentBlockHash: 'B2', sessionId: 'cs_2', createdAt: BASE_TIME + 1 }));
+    await s.createRefund(refundRequest({ id: 'rf_c', paymentBlockHash: 'B3', sessionId: 'cs_1', createdAt: BASE_TIME + 2 }));
+    await s.claimNextRefund(BASE_TIME + 10); // rf_a -> publishing
+
+    expect((await s.listRefunds()).map((r) => r.id)).toEqual(['rf_c', 'rf_b', 'rf_a']);
+    expect((await s.listRefunds({ statuses: ['requested'] })).map((r) => r.id)).toEqual(['rf_c', 'rf_b']);
+    expect((await s.listRefunds({ sessionId: 'cs_1' })).map((r) => r.id)).toEqual(['rf_c', 'rf_a']);
+    expect((await s.listRefunds({ statuses: [] }))).toEqual([]);
+    expect((await s.listRefunds({ limit: 1 })).map((r) => r.id)).toEqual(['rf_c']);
+  });
+
   it('queues a delivery and reads it back whole', async () => {
     await open().enqueueDelivery(delivery());
     const got = await store.getDelivery('whd_1');
@@ -625,12 +787,14 @@ describe('SqliteSessionStore schema migration', () => {
       // And the old session can now be paid with an operation index.
       const paid = await store.markPaid('cs_old', payment({ operationIndex: 2 }));
       expect(paid.operationIndex).toBe(2);
+      // Version 4 added the refund ledger.
+      expect((await store.createRefund({ id: 'rf_mig', paymentBlockHash: 'B', paymentOperationIndex: 0, sessionId: null, to: PAYER_ADDRESS, tokenAddress: USDC, amount: 1n, reason: 'late', origin: 'api', createdAt: BASE_TIME })).created).toBe(true);
     } finally {
       await store.close();
     }
 
     const check = new DatabaseSync(file);
-    expect((check.prepare('SELECT version FROM schema_version').get() as { version: number }).version).toBe(3);
+    expect((check.prepare('SELECT version FROM schema_version').get() as { version: number }).version).toBe(4);
     check.close();
   });
 

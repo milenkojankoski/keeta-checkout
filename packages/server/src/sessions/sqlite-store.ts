@@ -19,7 +19,9 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import type { DeliveriesQuery, DeliveryStatus, WebhookDelivery, WebhookEventType } from '../webhooks/types.ts';
+import type { NewRefund, Refund, RefundOrigin, RefundReason, RefundResultUpdate, RefundStatus, RefundsQuery } from '../refunds/types.ts';
 import {
+  applyRefundResult,
   applyMarkPaid,
   applyMarkUnmatched,
   cloneSession,
@@ -155,7 +157,41 @@ CREATE INDEX IF NOT EXISTS webhook_event ON webhook_deliveries(event_id);
 CREATE INDEX IF NOT EXISTS webhook_created ON webhook_deliveries(created_at DESC);
 `;
 
-const CURRENT_VERSION = 3;
+/**
+ * Version 4: the refund ledger (docs/decisions/0014).
+ *
+ * The unique index on the payment key is what makes "one refund per payment" a
+ * property of the data rather than of the code that writes it. Amounts are TEXT,
+ * as in `payments`, so a bigint survives untouched.
+ */
+const MIGRATION_V4 = `
+CREATE TABLE IF NOT EXISTS refunds (
+  id                      TEXT PRIMARY KEY,
+  payment_block_hash      TEXT NOT NULL,
+  payment_operation_index INTEGER NOT NULL,
+  session_id              TEXT,
+  to_address              TEXT NOT NULL,
+  token_address           TEXT NOT NULL,
+  amount                  TEXT NOT NULL,
+  reason                  TEXT NOT NULL,
+  origin                  TEXT NOT NULL,
+  status                  TEXT NOT NULL,
+  attempts                INTEGER NOT NULL,
+  attempt_started_at      INTEGER,
+  block_hash              TEXT,
+  last_error              TEXT,
+  created_at              INTEGER NOT NULL,
+  updated_at              INTEGER NOT NULL,
+  published_at            INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS refunds_payment ON refunds(payment_block_hash, payment_operation_index);
+CREATE INDEX IF NOT EXISTS refunds_status_created ON refunds(status, created_at);
+CREATE INDEX IF NOT EXISTS refunds_created ON refunds(created_at DESC);
+CREATE INDEX IF NOT EXISTS refunds_token_attempt ON refunds(token_address, attempt_started_at);
+`;
+
+const CURRENT_VERSION = 4;
 
 function toSession(row: SessionRowShape): Session {
   return {
@@ -233,6 +269,51 @@ function toDelivery(row: DeliveryRowShape): WebhookDelivery {
   };
 }
 
+interface RefundRowShape {
+  id: string;
+  payment_block_hash: string;
+  payment_operation_index: number;
+  session_id: string | null;
+  to_address: string;
+  token_address: string;
+  amount: string;
+  reason: string;
+  origin: string;
+  status: string;
+  attempts: number;
+  attempt_started_at: number | null;
+  block_hash: string | null;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+  published_at: number | null;
+}
+
+function toRefund(row: RefundRowShape): Refund {
+  return {
+    id: row.id,
+    paymentBlockHash: row.payment_block_hash,
+    paymentOperationIndex: row.payment_operation_index,
+    sessionId: row.session_id,
+    to: row.to_address,
+    tokenAddress: row.token_address,
+    amount: BigInt(row.amount),
+    reason: row.reason as RefundReason,
+    origin: row.origin as RefundOrigin,
+    status: row.status as RefundStatus,
+    attempts: row.attempts,
+    attemptStartedAt: row.attempt_started_at,
+    blockHash: row.block_hash,
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    publishedAt: row.published_at
+  };
+}
+
+const REFUND_COLUMNS = `id, payment_block_hash, payment_operation_index, session_id, to_address, token_address,
+  amount, reason, origin, status, attempts, attempt_started_at, block_hash, last_error, created_at, updated_at, published_at`;
+
 export interface SqliteSessionStoreOptions {
   /** File path, or `:memory:` for a throwaway database. */
   filename: string;
@@ -293,6 +374,12 @@ export class SqliteSessionStore implements SessionStore {
       this.#transact(() => {
         this.#db.exec(MIGRATION_V3);
         this.#db.prepare('UPDATE schema_version SET version = 3').run();
+      });
+    }
+    if (version < 4) {
+      this.#transact(() => {
+        this.#db.exec(MIGRATION_V4);
+        this.#db.prepare('UPDATE schema_version SET version = 4').run();
       });
     }
   }
@@ -545,6 +632,137 @@ export class SqliteSessionStore implements SessionStore {
     this.#db
       .prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
       .run(key, value);
+  }
+
+  async createRefund(refund: NewRefund): Promise<{ created: boolean; refund: Refund }> {
+    this.#assertOpen();
+    return this.#transact(() => {
+      const existing = this.#db
+        .prepare('SELECT * FROM refunds WHERE payment_block_hash = ? AND payment_operation_index = ?')
+        .get(refund.paymentBlockHash, refund.paymentOperationIndex) as unknown as RefundRowShape | undefined;
+      if (existing !== undefined) return { created: false, refund: toRefund(existing) };
+
+      const row: Refund = {
+        ...refund,
+        status: 'requested',
+        attempts: 0,
+        attemptStartedAt: null,
+        blockHash: null,
+        lastError: null,
+        updatedAt: refund.createdAt,
+        publishedAt: null
+      };
+      this.#db
+        .prepare(`INSERT INTO refunds (${REFUND_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          row.id,
+          row.paymentBlockHash,
+          row.paymentOperationIndex,
+          row.sessionId,
+          row.to,
+          row.tokenAddress,
+          row.amount.toString(),
+          row.reason,
+          row.origin,
+          row.status,
+          row.attempts,
+          row.attemptStartedAt,
+          row.blockHash,
+          row.lastError,
+          row.createdAt,
+          row.updatedAt,
+          row.publishedAt
+        );
+      return { created: true, refund: row };
+    });
+  }
+
+  async getRefund(id: string): Promise<Refund | undefined> {
+    this.#assertOpen();
+    const row = this.#db.prepare('SELECT * FROM refunds WHERE id = ?').get(id) as unknown as RefundRowShape | undefined;
+    return row === undefined ? undefined : toRefund(row);
+  }
+
+  async getRefundForPayment(blockHash: string, operationIndex: number): Promise<Refund | undefined> {
+    this.#assertOpen();
+    const row = this.#db
+      .prepare('SELECT * FROM refunds WHERE payment_block_hash = ? AND payment_operation_index = ?')
+      .get(blockHash, operationIndex) as unknown as RefundRowShape | undefined;
+    return row === undefined ? undefined : toRefund(row);
+  }
+
+  async listRefunds(query: RefundsQuery = {}): Promise<Refund[]> {
+    this.#assertOpen();
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+    if (query.statuses !== undefined) {
+      if (query.statuses.length === 0) return [];
+      where.push(`status IN (${query.statuses.map(() => '?').join(', ')})`);
+      params.push(...query.statuses);
+    }
+    if (query.sessionId !== undefined) {
+      where.push('session_id = ?');
+      params.push(query.sessionId);
+    }
+    const sql = `SELECT * FROM refunds${where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC LIMIT ?`;
+    const rows = this.#db.prepare(sql).all(...params, query.limit ?? 100) as unknown as RefundRowShape[];
+    return rows.map(toRefund);
+  }
+
+  async claimNextRefund(now: number): Promise<{ refund: Refund; claimed: boolean } | undefined> {
+    this.#assertOpen();
+    return this.#transact(() => {
+      const inFlight = this.#db
+        .prepare(`SELECT * FROM refunds WHERE status = 'publishing' ORDER BY attempt_started_at ASC LIMIT 1`)
+        .get() as unknown as RefundRowShape | undefined;
+      if (inFlight !== undefined) return { refund: toRefund(inFlight), claimed: false };
+
+      const next = this.#db
+        .prepare(`SELECT * FROM refunds WHERE status = 'requested' ORDER BY created_at ASC LIMIT 1`)
+        .get() as unknown as RefundRowShape | undefined;
+      if (next === undefined) return undefined;
+
+      this.#db
+        .prepare(
+          `UPDATE refunds SET status = 'publishing', attempts = attempts + 1, attempt_started_at = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(now, now, next.id);
+      return {
+        refund: toRefund({ ...next, status: 'publishing', attempts: next.attempts + 1, attempt_started_at: now, updated_at: now }),
+        claimed: true
+      };
+    });
+  }
+
+  async recordRefundResult(id: string, result: RefundResultUpdate): Promise<Refund> {
+    this.#assertOpen();
+    return this.#transact(() => {
+      const row = this.#db.prepare('SELECT * FROM refunds WHERE id = ?').get(id) as unknown as RefundRowShape | undefined;
+      if (row === undefined) throw new StoreError('REFUND_NOT_FOUND', `no refund ${id}`);
+      const next = applyRefundResult(toRefund(row), result);
+      this.#db
+        .prepare(
+          `UPDATE refunds SET status = ?, attempt_started_at = ?, block_hash = ?, last_error = ?, updated_at = ?, published_at = ? WHERE id = ?`
+        )
+        .run(next.status, next.attemptStartedAt, next.blockHash, next.lastError, next.updatedAt, next.publishedAt, id);
+      return next;
+    });
+  }
+
+  async sumRefundedSince(tokenAddress: string, since: number): Promise<bigint> {
+    this.#assertOpen();
+    // Summed here rather than in SQL: the amounts are TEXT on purpose, and SQLite
+    // would add them as floats.
+    const rows = this.#db
+      .prepare(
+        `SELECT amount FROM refunds
+          WHERE token_address = ? AND status IN ('published', 'publishing')
+            AND COALESCE(attempt_started_at, created_at) >= ?`
+      )
+      .all(tokenAddress, since) as unknown as Array<{ amount: string }>;
+    let total = 0n;
+    for (const row of rows) total += BigInt(row.amount);
+    return total;
   }
 
   async enqueueDelivery(delivery: WebhookDelivery): Promise<WebhookDelivery> {

@@ -56,3 +56,11 @@ export function generatePaymentReference(): string {
   }
   return reference;
 }
+
+/**
+ * `rf_` for a refund. Like the others it is 128 random bits; it travels on-chain as
+ * `kcr_<id>` in the refund send's `external`, which `refundExternal` builds.
+ */
+export function generateRefundId(): string {
+  return `rf_${randomToken()}`;
+}

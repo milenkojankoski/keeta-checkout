@@ -22,13 +22,16 @@ import type { CheckoutService, ProcessedPayment, SessionChangeEvent } from '../s
 import { REFUNDABLE_DISPOSITIONS, type PaymentRow, type SessionStore } from '../sessions/store.ts';
 import { SIGNATURE_HEADER, signWebhook } from './signature.ts';
 import {
+  EVENT_TYPE_BY_REFUND_STATUS,
   EVENT_TYPE_BY_STATUS,
+  toRefundView,
   type DeliveryAttemptResult,
   type WebhookDelivery,
   type WebhookEvent,
   type WebhookEventType,
   type WebhookPaymentView
 } from './types.ts';
+import type { Refund } from '../refunds/types.ts';
 
 /**
  * Delay before each retry, in milliseconds, after the attempt that just failed.
@@ -209,43 +212,8 @@ export class WebhookDispatcher {
     };
   }
 
-  async #enqueue(type: WebhookEventType, data: WebhookEvent['data']): Promise<WebhookDelivery[]> {
-    const endpoints = this.endpoints.filter((endpoint) => endpoint.events.includes(type));
-    if (endpoints.length === 0) return [];
-
-    const now = this.#now();
-    const event: WebhookEvent = {
-      id: `evt_${randomBytes(16).toString('base64url')}`,
-      type,
-      created: new Date(now).toISOString(),
-      network: this.#config.network,
-      data
-    };
-    // Serialised once. Every endpoint and every retry sends these exact bytes, which
-    // is what the signature covers.
-    const payload = JSON.stringify(event);
-
-    const created: WebhookDelivery[] = [];
-    for (const endpoint of endpoints) {
-      created.push(
-        await this.#store.enqueueDelivery({
-          id: `whd_${randomBytes(12).toString('base64url')}`,
-          eventId: event.id,
-          eventType: type,
-          endpointUrl: endpoint.url,
-          payload,
-          status: 'pending',
-          attempts: 0,
-          nextAttemptAt: now,
-          lastError: null,
-          lastStatusCode: null,
-          createdAt: now,
-          updatedAt: now,
-          deliveredAt: null
-        })
-      );
-    }
-    return created;
+  #enqueue(type: WebhookEventType, data: WebhookEvent['data']): Promise<WebhookDelivery[]> {
+    return enqueueWebhookEvent(this.#store, this.#config, type, data, this.#now());
   }
 
   /** Attempt every delivery that is due. Returns how many were attempted. */
@@ -367,4 +335,68 @@ export class WebhookDispatcher {
 function truncate(value: string | undefined): string | null {
   if (value === undefined) return null;
   return value.length <= MAX_ERROR_LENGTH ? value : `${value.slice(0, MAX_ERROR_LENGTH)}…`;
+}
+
+/**
+ * Write the deliveries for one event, one per endpoint that wants it.
+ *
+ * A function rather than a method so that a process which has no dispatcher of
+ * its own can still raise an event: the refund process writes `refund.*` rows into
+ * the shared store this way, and the checkout server's dispatcher sends them. The
+ * store is the queue; which process wrote a row does not matter to it.
+ */
+export async function enqueueWebhookEvent(
+  store: Pick<SessionStore, 'enqueueDelivery'>,
+  config: Pick<CheckoutConfig, 'network' | 'webhookEndpoints'>,
+  type: WebhookEventType,
+  data: WebhookEvent['data'],
+  now: number = Date.now()
+): Promise<WebhookDelivery[]> {
+  const endpoints = config.webhookEndpoints.filter((endpoint) => endpoint.events.includes(type));
+  if (endpoints.length === 0) return [];
+
+  const event: WebhookEvent = {
+    id: `evt_${randomBytes(16).toString('base64url')}`,
+    type,
+    created: new Date(now).toISOString(),
+    network: config.network,
+    data
+  };
+  // Serialised once. Every endpoint and every retry sends these exact bytes, which
+  // is what the signature covers.
+  const payload = JSON.stringify(event);
+
+  const created: WebhookDelivery[] = [];
+  for (const endpoint of endpoints) {
+    created.push(
+      await store.enqueueDelivery({
+        id: `whd_${randomBytes(12).toString('base64url')}`,
+        eventId: event.id,
+        eventType: type,
+        endpointUrl: endpoint.url,
+        payload,
+        status: 'pending',
+        attempts: 0,
+        nextAttemptAt: now,
+        lastError: null,
+        lastStatusCode: null,
+        createdAt: now,
+        updatedAt: now,
+        deliveredAt: null
+      })
+    );
+  }
+  return created;
+}
+
+/** A refund status change, when it maps to an event. Used by the refund process. */
+export function enqueueRefundChange(
+  store: Pick<SessionStore, 'enqueueDelivery'>,
+  config: Pick<CheckoutConfig, 'network' | 'webhookEndpoints'>,
+  refund: Refund,
+  now: number = Date.now()
+): Promise<WebhookDelivery[]> {
+  const type = EVENT_TYPE_BY_REFUND_STATUS[refund.status];
+  if (type === undefined) return Promise.resolve([]);
+  return enqueueWebhookEvent(store, config, type, { refund: toRefundView(refund, config.network) }, now);
 }

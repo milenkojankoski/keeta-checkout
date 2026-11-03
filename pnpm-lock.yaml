@@ -81,6 +81,9 @@ importers:
 
   packages/refunds:
     dependencies:
+      '@keeta-checkout/server':
+        specifier: workspace:*
+        version: link:../server
       '@keetanetwork/anchor':
         specifier: 0.0.105
         version: 0.0.105(@types/node@24.19.2)(typescript@5.9.3)

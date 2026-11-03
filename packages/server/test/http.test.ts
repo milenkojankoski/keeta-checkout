@@ -473,6 +473,79 @@ describe('GET /api/payments', () => {
     expect((await server().get('/api/payments')).status).toBe(401);
   });
 
+  it('creates a refund for a refundable payment, once per payment, then lists it', async () => {
+    const created = await createSession();
+    const session = await harness.service.getSession(created.body.id as string);
+    const base = {
+      from: 'keeta_payer',
+      to: session.receivingAddress,
+      tokenAddress: session.tokenAddress,
+      external: session.reference,
+      blockDate: harness.clock.now() + 1_000
+    };
+    await harness.service.processPayment({ ...base, blockHash: 'RB1', operationIndex: 0, amount: 1n }); // underpaid
+
+    const made = await server().post('/api/payments/RB1/refund').set(auth).send({});
+    expect(made.status).toBe(201);
+    expect(made.body).toMatchObject({
+      paymentBlockHash: 'RB1',
+      paymentOperationIndex: 0,
+      to: 'keeta_payer',
+      tokenAddress: session.tokenAddress,
+      amount: '1',
+      reason: 'underpaid',
+      origin: 'api',
+      status: 'requested',
+      sessionId: session.id,
+      blockHash: null
+    });
+    expect(made.body.id).toMatch(/^rf_/);
+
+    // A second request for the same payment returns the same row, with 200.
+    const again = await server().post('/api/payments/RB1/refund').set(auth).send({});
+    expect(again.status).toBe(200);
+    expect(again.body.id).toBe(made.body.id);
+
+    const list = await server().get('/api/refunds').set(auth);
+    expect(list.status).toBe(200);
+    expect(list.body.refunds).toHaveLength(1);
+    expect(list.body.refunds[0].id).toBe(made.body.id);
+
+    const bySession = await server().get(`/api/refunds?sessionId=${session.id}`).set(auth);
+    expect(bySession.body.refunds.map((r: { id: string }) => r.id)).toEqual([made.body.id]);
+    const byStatus = await server().get('/api/refunds?status=published').set(auth);
+    expect(byStatus.body.refunds).toEqual([]);
+  });
+
+  it('refuses to refund a matched payment, an unknown one, and needs the key', async () => {
+    const created = await createSession();
+    const session = await harness.service.getSession(created.body.id as string);
+    await harness.service.processPayment({
+      from: 'keeta_payer',
+      to: session.receivingAddress,
+      tokenAddress: session.tokenAddress,
+      external: session.reference,
+      blockDate: harness.clock.now() + 1_000,
+      blockHash: 'RBM',
+      operationIndex: 0,
+      amount: session.amount // exact: matched, not refundable
+    });
+
+    const matched = await server().post('/api/payments/RBM/refund').set(auth).send({});
+    expect(matched.status).toBe(400);
+    expect(matched.body.error.code).toBe('NOT_REFUNDABLE');
+
+    const missing = await server().post('/api/payments/NOPE/refund').set(auth).send({});
+    expect(missing.status).toBe(404);
+
+    const noKey = await server().post('/api/payments/RBM/refund').send({});
+    expect(noKey.status).toBe(401);
+
+    const badIndex = await server().post('/api/payments/RBM/refund').set(auth).send({ operationIndex: -1 });
+    expect(badIndex.status).toBe(400);
+    expect(badIndex.body.error.code).toBe('OPERATION_INDEX_INVALID');
+  });
+
   it('lists the ledger with amounts as strings and a refundable flag', async () => {
     const created = await createSession();
     const session = await harness.service.getSession(created.body.id as string);

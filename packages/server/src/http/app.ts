@@ -23,6 +23,9 @@ import { CheckoutError } from '../errors.ts';
 import { PaymentRequestError, renderQrSvg } from '../payment-request.ts';
 import type { CheckoutService } from '../sessions/service.ts';
 import { REFUNDABLE_DISPOSITIONS, type PaymentDisposition } from '../sessions/store.ts';
+import { generateRefundId } from '../sessions/refs.ts';
+import type { NewRefund, RefundReason, RefundStatus } from '../refunds/types.ts';
+import { toRefundView } from '../webhooks/types.ts';
 import type { DeliveryStatus } from '../webhooks/types.ts';
 import { newNonce, payPageCsp, renderPayPage } from './pay-page.ts';
 import type { Session } from '../sessions/types.ts';
@@ -152,6 +155,80 @@ export function createApp(options: CreateAppOptions): CheckoutApp {
           explorerUrl: `${EXPLORER_URL[service.config.network]}/block/${payment.blockHash}`
         }))
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Create a refund for a recorded payment. The refund can only go back to the
+  // payer, in the token they paid, for at most what they paid: none of that is a
+  // parameter. The refund process, running separately, publishes it from the vault;
+  // this route only writes the row. One refund per payment (see the store), so a
+  // retry or a double click returns the existing one with 200 rather than 201.
+  app.post('/api/payments/:blockHash/refund', merchantOnly, async (req, res, next) => {
+    try {
+      const blockHash = param(req, 'blockHash');
+      const body = asRecord(req.body as unknown);
+      const operationIndex = body.operationIndex === undefined ? 0 : asOperationIndex(body.operationIndex);
+
+      const payment = await service.store.getPayment(blockHash, operationIndex);
+      if (payment === undefined) {
+        throw CheckoutError.notFound(`no payment ${blockHash}:${operationIndex}`);
+      }
+
+      let reason: RefundReason;
+      let amount: bigint;
+      if (payment.disposition === 'overpaid') {
+        // The excess, read from the session, is the only refundable part of an
+        // overpayment: the rest paid the order.
+        const session = payment.sessionId === null ? undefined : await service.getSession(payment.sessionId).catch(() => undefined);
+        const excess = session?.overpaidBy ?? null;
+        if (excess === null || excess <= 0n) {
+          throw CheckoutError.invalid('NOTHING_TO_REFUND', 'this payment has no overpaid excess to refund');
+        }
+        reason = 'overpaid';
+        amount = excess;
+      } else if (REFUNDABLE_DISPOSITIONS.has(payment.disposition)) {
+        reason = payment.disposition as RefundReason;
+        amount = payment.amount;
+      } else {
+        throw CheckoutError.invalid('NOT_REFUNDABLE', `a ${payment.disposition} payment is not refundable`, 'disposition');
+      }
+
+      const request: NewRefund = {
+        id: generateRefundId(),
+        paymentBlockHash: payment.blockHash,
+        paymentOperationIndex: payment.operationIndex,
+        sessionId: payment.sessionId,
+        to: payment.from,
+        tokenAddress: payment.tokenAddress,
+        amount,
+        reason,
+        origin: 'api',
+        createdAt: Date.now()
+      };
+      const { created, refund } = await service.store.createRefund(request);
+      res.status(created ? 201 : 200).json(toRefundView(refund, service.config.network));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The refund ledger. `?status=published,failed` and `?sessionId=` narrow it.
+  app.get('/api/refunds', merchantOnly, async (req, res, next) => {
+    try {
+      const statusParam = typeof req.query.status === 'string' ? req.query.status : undefined;
+      const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
+      const limitParam = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+      if (limitParam !== undefined && (!Number.isInteger(limitParam) || limitParam < 1 || limitParam > 1000)) {
+        throw CheckoutError.invalid('LIMIT_INVALID', 'limit must be a whole number from 1 to 1000', 'limit');
+      }
+      const refunds = await service.store.listRefunds({
+        ...(statusParam === undefined ? {} : { statuses: statusParam.split(',').map((status) => status.trim()).filter(Boolean) as RefundStatus[] }),
+        ...(sessionId === undefined ? {} : { sessionId }),
+        ...(limitParam === undefined ? {} : { limit: limitParam })
+      });
+      res.json({ refunds: refunds.map((refund) => toRefundView(refund, service.config.network)) });
     } catch (error) {
       next(error);
     }
@@ -494,6 +571,13 @@ function asRecord(value: unknown): Record<string, unknown> {
  */
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function asOperationIndex(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw CheckoutError.invalid('OPERATION_INDEX_INVALID', 'operationIndex must be a whole number of 0 or more', 'operationIndex');
+  }
+  return value;
 }
 
 function asExpiresIn(value: unknown): number {

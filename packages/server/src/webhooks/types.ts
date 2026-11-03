@@ -8,6 +8,8 @@
  */
 import type { MerchantSessionView, SessionStatus } from '../sessions/types.ts';
 import type { PaymentDisposition } from '../sessions/store.ts';
+import type { Refund, RefundOrigin, RefundReason, RefundStatus } from '../refunds/types.ts';
+import { EXPLORER_URL, type KeetaNetworkName } from '../config.ts';
 
 /**
  * What a merchant can be told about.
@@ -25,15 +27,79 @@ export type WebhookEventType =
   | 'checkout.session.expired'
   | 'checkout.session.cancelled'
   | 'checkout.session.unmatched'
-  | 'checkout.payment.recorded';
+  | 'checkout.payment.recorded'
+  | 'refund.requested'
+  | 'refund.published'
+  | 'refund.failed'
+  | 'refund.refused';
 
 export const WEBHOOK_EVENT_TYPES: readonly WebhookEventType[] = [
   'checkout.session.paid',
   'checkout.session.expired',
   'checkout.session.cancelled',
   'checkout.session.unmatched',
-  'checkout.payment.recorded'
+  'checkout.payment.recorded',
+  'refund.requested',
+  'refund.published',
+  'refund.failed',
+  'refund.refused'
 ] as const;
+
+/**
+ * The refund states a merchant is told about. `publishing` is not one: it is a
+ * moment inside the process, not an outcome, and a merchant acting on it would
+ * be acting on something that may still go either way.
+ */
+export const EVENT_TYPE_BY_REFUND_STATUS: Partial<Record<RefundStatus, WebhookEventType>> = {
+  requested: 'refund.requested',
+  published: 'refund.published',
+  failed: 'refund.failed',
+  refused: 'refund.refused'
+};
+
+/** A refund as a merchant sees it. Amounts are strings; see the payment view. */
+export interface WebhookRefundView {
+  id: string;
+  paymentBlockHash: string;
+  paymentOperationIndex: number;
+  sessionId: string | null;
+  to: string;
+  tokenAddress: string;
+  amount: string;
+  reason: RefundReason;
+  origin: RefundOrigin;
+  status: RefundStatus;
+  attempts: number;
+  /** The block that carried it, once published. */
+  blockHash: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+  explorerUrl: string | null;
+}
+
+export function toRefundView(refund: Refund, network: KeetaNetworkName): WebhookRefundView {
+  return {
+    id: refund.id,
+    paymentBlockHash: refund.paymentBlockHash,
+    paymentOperationIndex: refund.paymentOperationIndex,
+    sessionId: refund.sessionId,
+    to: refund.to,
+    tokenAddress: refund.tokenAddress,
+    amount: refund.amount.toString(),
+    reason: refund.reason,
+    origin: refund.origin,
+    status: refund.status,
+    attempts: refund.attempts,
+    blockHash: refund.blockHash,
+    lastError: refund.lastError,
+    createdAt: new Date(refund.createdAt).toISOString(),
+    updatedAt: new Date(refund.updatedAt).toISOString(),
+    publishedAt: refund.publishedAt === null ? null : new Date(refund.publishedAt).toISOString(),
+    explorerUrl: refund.blockHash === null ? null : `${EXPLORER_URL[network]}/block/${refund.blockHash}`
+  };
+}
 
 /** The status changes that map to an event, and which one. */
 export const EVENT_TYPE_BY_STATUS: Partial<Record<SessionStatus, WebhookEventType>> = {
@@ -79,6 +145,7 @@ export interface WebhookEvent {
   data: {
     session?: MerchantSessionView;
     payment?: WebhookPaymentView;
+    refund?: WebhookRefundView;
   };
 }
 

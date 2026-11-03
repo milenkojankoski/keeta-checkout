@@ -1,5 +1,5 @@
 export const name = '@keeta-checkout/server';
-export const version = '0.0.0';
+export const version = '0.1.0';
 
 export {
   AmountError,
@@ -56,6 +56,7 @@ export {
 export {
   EXTERNAL_MAX_LENGTH,
   generatePaymentReference,
+  generateRefundId,
   generateSessionId,
   isValidExternal
 } from './sessions/refs.ts';
@@ -77,6 +78,20 @@ export {
   type SessionStore,
   type StoreErrorCode
 } from './sessions/store.ts';
+
+export {
+  REFUND_REASONS,
+  REFUND_STATUSES,
+  refundExternal,
+  refundIdFromExternal,
+  type NewRefund,
+  type Refund,
+  type RefundOrigin,
+  type RefundReason,
+  type RefundResultUpdate,
+  type RefundStatus,
+  type RefundsQuery
+} from './refunds/types.ts';
 
 export { classifyPayment, type Classification, type PaymentAction } from './watcher/matcher.ts';
 export {
