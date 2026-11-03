@@ -14,10 +14,10 @@ The SDK has not moved since step 2. `@keetanetwork/anchor` is still 0.0.105 and
 against the same source already read, not a new one. 0.0.106 is tagged in the anchor
 repository but has never been published to npm.
 
-One caveat on this review that a reader should weigh: the same model wrote most of
-the code it audits. Three findings below came from measurement rather than reading,
-which is the part self-review is worst at, but an independent pass would still be
-worth more than this one.
+One caveat on this review that a reader should weigh: it is a self-review, by the
+author of most of the code it audits. Three findings below came from measurement
+rather than reading, which is the part self-review is worst at, but an independent
+pass would still be worth more than this one.
 
 ## The seven rules
 
@@ -134,8 +134,8 @@ scaling waits for a Postgres adapter.
 
 ## Independent re-review
 
-Same day, by a different model, at the user's request, because the pass above
-reviewed code its own author had written. Everything below was reproduced against
+Same day, by a second reviewer, at the maintainer's request, because the pass above was
+a self-review. Everything below was reproduced against
 the running development stack before it was changed and verified there afterwards.
 The pass above was checked too: the signature verifier, the stream cap, the headers,
 the SQL binding, the URL scheme checks and the dependency reachability argument all

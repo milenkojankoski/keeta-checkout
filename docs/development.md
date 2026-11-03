@@ -207,7 +207,7 @@ the resolver at runtime, never from this table.
 | `$EURC` | |
 | `$CBBTC` | |
 | `$KUSD`, `$KEUR` | Abstract currency tokens |
-| `$RUSD` | Listed on test but not named in Keeta's own skill documentation |
+| `$RUSD` | Listed on test but not named in Keeta's own `keeta-rails` reference |
 
 Every token the test network lists is open to any holder, so any of them can price a
 session. On main that is not true: the bare-ISO-code fiat tokens (`USD`, `EUR`, …)

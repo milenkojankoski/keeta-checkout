@@ -261,37 +261,36 @@ Reviewed against the code on 2026-10-31: `docs/decisions/0013-security-review.md
 - Custody, escrow or holding funds on behalf of merchants.
 - Tax calculation and invoicing.
 
-## 13. Build order and model assignment
+## 13. Build order
 
-Opus is the default: it is cheaper and the bulk of this project is conventional Node and web work. Switch to Fable for steps where a subtle mistake moves or loses money, or where the SDK's behaviour has to be read from source rather than docs. Each step ends with a check that must pass before the next starts.
+Each step ends with a check that must pass before the next starts. Steps marked for independent review are the ones where a subtle mistake moves or loses money, or where the SDK's behaviour has to be read from source rather than docs; they get a second pair of eyes before release.
 
 Setup instructions and the current state of the test wallets are in
 [`docs/development.md`](docs/development.md).
 
-| Step | What gets built | Model | Why |
+| Step | What gets built | Review | Why |
 | --- | --- | --- | --- |
-| 0 | Monorepo scaffold: pnpm workspaces, TypeScript, ESLint, vitest, Node 24 pin, CI on test network | Opus | Boilerplate. **Done 2026-10-29** |
-| 1 | Test wallet setup: two seeds in a local secret store (merchant and payer), faucet funding script, explorer links | Opus | Follows the quickstart verbatim. **Done 2026-10-29**: both wallets hold 10 test KTA |
-| 2 | Token resolution: signed resolver, `listTokens`, `lookupToken`, decimals from on-chain metadata, decimal-string to `bigint` conversion with tests | **Fable** | Decimals and base units are where money math goes wrong; KTA decimals have differed between docs and tools. **Done 2026-10-30**: `packages/server/src/{amounts,tokens}.ts`, 28 tests, `docs/decisions/0003` |
-| 3 | Session store and REST API: SQLite schema, create / get / cancel, API-key auth, server-sent events | Opus | Standard CRUD. **Done 2026-10-30**: `packages/server/src/{config,errors,sessions/*,http/*}.ts`, 151 tests, `docs/decisions/0004` |
-| 4 | URI and QR: `encodeKeetaURI`, random session reference within the `external` constraints, QR as SVG, `parseKeetaURI` round-trip tests | Opus | Thin wrapper over one SDK call. **Done 2026-10-30**: `packages/server/src/payment-request.ts`, 185 tests, `docs/decisions/0006` |
-| 5 | **Watcher and matching rule:** `BlockListener` or `getHistory` cursor, `on('change')` path, exact token / value / `external` match, overpaid and unmatched states, block-hash idempotency, restart safety | **Fable** | The core correctness risk: a cursor or comparison bug marks unpaid orders as paid. **Done 2026-10-30**: `packages/server/src/watcher/*`, payments ledger, 261 tests, `docs/decisions/0007` |
-| 6 | End-to-end test: create session, pay it from the payer account, see it flip to `paid`; plus underpay, wrong token, missing reference, duplicate send, and expiry cases | **Fable** | Defines the acceptance bar for everything after it. **Done 2026-10-30**: `test/e2e.live.test.ts`, nine real blocks on the test network, `docs/decisions/0008` |
-| 7 | Webhooks: HMAC signing, delivery log, retry with backoff, verification helper for merchants | Opus | Well-trodden pattern. **Done 2026-10-30**: `packages/server/src/webhooks/*`, 333 tests, `docs/decisions/0009` |
-| 8 | Hosted pay page and `<keeta-pay-button>` web component, React wrapper, polling and SSE, copy-address fallback | Opus | UI work. **Done 2026-10-30**: `packages/server/src/http/pay-page.ts`, `packages/button/src/*`, 392 tests, `docs/decisions/0010` |
-| 9 | `npx keeta-checkout init`, Docker image, docs site | Opus | Tooling. **Done 2026-10-30**: `packages/cli`, esbuild bundles, `docker/`, `docs/quickstart.md`, 416 tests, `docs/decisions/0011`. No generated docs site; see that record |
-| 10 | Reference integration into the Airbnb webapp: "Mit Keeta bezahlen" next to "Sofort buchen", watcher replaces the Stripe webhook for that path | Opus, Fable review | The booking state machine already exists; Fable checks the hold-and-expiry interaction |
-| 11 | WooCommerce plugin | Opus | PHP gateway against the stable REST contract. **Done 2026-10-30**: `plugins/woocommerce/`, 122 PHP assertions including 12 cross-language signature fixtures, `docs/decisions/0012`. Run inside WordPress 7.1.4 with WooCommerce 11.2.1; the block checkout needed its own `AbstractPaymentMethodType` registration. Re-reviewed in step 12: a dropped-payment path and a broken cancel button found and fixed, see `docs/decisions/0013` |
-| 12 | **Security review** of the whole v1 against section 11, and a review of SDK usage against the current anchor source | **Fable** | **Done 2026-10-31**, two passes: an Opus pass (rules verified, advisories 8 down to 2, stream cap, API headers) and an independent Fable pass that found the server dying on a Keeta node outage and a plugin path that dropped a real payment; both fixed, `docs/decisions/0013` |
-| 13 | **Refunds process (v2):** storage-account vault, `SEND_ON_BEHALF` delegation scoped to the payout token, daily cap that fails closed, `recover()` after ambiguous failures | **Fable** | Wrong ACLs leak the merchant's funds |
-| 14 | Shopify app, multi-token acceptance with FX quotes, dashboard | Opus | Product work on top of a proven core |
-| 15 | x402 mode | **Fable** first spike, then Opus | The `@x402/keeta` facilitator flow is new and thinly documented |
+| 0 | Monorepo scaffold: pnpm workspaces, TypeScript, ESLint, vitest, Node 24 pin, CI on test network |  | Boilerplate. **Done 2026-10-29** |
+| 1 | Test wallet setup: two seeds in a local secret store (merchant and payer), faucet funding script, explorer links |  | Follows the quickstart verbatim. **Done 2026-10-29**: both wallets hold 10 test KTA |
+| 2 | Token resolution: signed resolver, `listTokens`, `lookupToken`, decimals from on-chain metadata, decimal-string to `bigint` conversion with tests | independent | Decimals and base units are where money math goes wrong; KTA decimals have differed between docs and tools. **Done 2026-10-30**: `packages/server/src/{amounts,tokens}.ts`, 28 tests, `docs/decisions/0003` |
+| 3 | Session store and REST API: SQLite schema, create / get / cancel, API-key auth, server-sent events |  | Standard CRUD. **Done 2026-10-30**: `packages/server/src/{config,errors,sessions/*,http/*}.ts`, 151 tests, `docs/decisions/0004` |
+| 4 | URI and QR: `encodeKeetaURI`, random session reference within the `external` constraints, QR as SVG, `parseKeetaURI` round-trip tests |  | Thin wrapper over one SDK call. **Done 2026-10-30**: `packages/server/src/payment-request.ts`, 185 tests, `docs/decisions/0006` |
+| 5 | **Watcher and matching rule:** `BlockListener` or `getHistory` cursor, `on('change')` path, exact token / value / `external` match, overpaid and unmatched states, block-hash idempotency, restart safety | independent | The core correctness risk: a cursor or comparison bug marks unpaid orders as paid. **Done 2026-10-30**: `packages/server/src/watcher/*`, payments ledger, 261 tests, `docs/decisions/0007` |
+| 6 | End-to-end test: create session, pay it from the payer account, see it flip to `paid`; plus underpay, wrong token, missing reference, duplicate send, and expiry cases | independent | Defines the acceptance bar for everything after it. **Done 2026-10-30**: `test/e2e.live.test.ts`, nine real blocks on the test network, `docs/decisions/0008` |
+| 7 | Webhooks: HMAC signing, delivery log, retry with backoff, verification helper for merchants |  | Well-trodden pattern. **Done 2026-10-30**: `packages/server/src/webhooks/*`, 333 tests, `docs/decisions/0009` |
+| 8 | Hosted pay page and `<keeta-pay-button>` web component, React wrapper, polling and SSE, copy-address fallback |  | UI work. **Done 2026-10-30**: `packages/server/src/http/pay-page.ts`, `packages/button/src/*`, 392 tests, `docs/decisions/0010` |
+| 9 | `npx keeta-checkout init`, Docker image, docs site |  | Tooling. **Done 2026-10-30**: `packages/cli`, esbuild bundles, `docker/`, `docs/quickstart.md`, 416 tests, `docs/decisions/0011`. No generated docs site; see that record |
+| 10 | Reference integration into the Airbnb webapp: "Mit Keeta bezahlen" next to "Sofort buchen", watcher replaces the Stripe webhook for that path | independent | The booking state machine already exists; the review checks the hold-and-expiry interaction |
+| 11 | WooCommerce plugin |  | PHP gateway against the stable REST contract. **Done 2026-10-30**: `plugins/woocommerce/`, 122 PHP assertions including 12 cross-language signature fixtures, `docs/decisions/0012`. Run inside WordPress 7.1.4 with WooCommerce 11.2.1; the block checkout needed its own `AbstractPaymentMethodType` registration. Re-reviewed in step 12: a dropped-payment path and a broken cancel button found and fixed, see `docs/decisions/0013` |
+| 12 | **Security review** of the whole v1 against section 11, and a review of SDK usage against the current anchor source | independent | **Done 2026-10-31**, two passes: a first pass (rules verified, advisories 8 down to 2, stream cap, API headers) and an independent second pass that found the server dying on a Keeta node outage and a plugin path that dropped a real payment; both fixed, `docs/decisions/0013` |
+| 13 | **Refunds process (v2):** storage-account vault, `SEND_ON_BEHALF` delegation scoped to the payout token, daily cap that fails closed, `recover()` after ambiguous failures | independent | Wrong ACLs leak the merchant's funds |
+| 14 | Shopify app, multi-token acceptance with FX quotes, dashboard |  | Product work on top of a proven core |
+| 15 | x402 mode | independent | The `@x402/keeta` facilitator flow is new and thinly documented |
 
-**Switching rules during any step**
+**Review rules during any step**
 
-- Switch to Fable when the SDK's types or runtime behaviour disagree with the skill docs, when a test fails for a reason you cannot explain in one sentence, or when touching anything that signs and publishes a block.
-- Switch back to Opus once the design decision is written down in `docs/decisions/` and the tests for it pass.
-- Fable reviews every pull request that touches `packages/server/src/watcher`, `packages/refunds`, or amount conversion, regardless of who wrote it.
+- Stop and write the decision down in `docs/decisions/` when the SDK's types or runtime behaviour disagree with Keeta's documentation, when a test fails for a reason you cannot explain in one sentence, or when touching anything that signs and publishes a block. Carry on only once the record exists and the tests for it pass.
+- Every pull request that touches `packages/server/src/watcher`, `packages/refunds`, or amount conversion gets an independent review, regardless of who wrote it.
 
 ## 14. Open questions
 
@@ -319,11 +318,11 @@ keeta-checkout/
   docker/
 ```
 
-License: Apache-2.0, matching Keeta's own agent-skills pack.
+License: Apache-2.0, matching Keeta's own published reference material.
 
 ## 16. Sources checked for this design
 
-- Keeta agent skills pack (`keeta-rails`): overview, card-payments, send-receive-tokens, complete-kyb, receive-bank-deposits.
+- Keeta's published `keeta-rails` reference pack: overview, card payments, send and receive tokens, KYB, bank deposits.
 - `@keetanetwork/anchor` at v0.0.106: `src/lib/uri.ts`, `src/lib/block-listener.ts`, `src/lib/history.ts`, `src/lib/resolver.ts`, and commits through 2026-10-28.
 - `@keetanetwork/keetanet-client` at v0.18.8: `getHistory`, `on('change')`, `send`, `external` constraints.
 - Docs: <https://docs.keeta.com>, API reference <https://static.test.keeta.com/docs/>, examples <https://github.com/KeetaNetwork/keetanet-examples>.

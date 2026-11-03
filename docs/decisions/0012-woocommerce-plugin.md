@@ -275,7 +275,7 @@ matter.
 - `pnpm fixtures` and `pnpm test:php` are new scripts. The PHP suite is not part of
   `pnpm test`, because it needs Docker and CI does not have PHP configured yet.
 - Per the standing rule in README section 13, the signature verification and the
-  order-state transitions want a Fable review before release, since they touch
+  order-state transitions want an independent review before release, since they touch
   payment state.
 - The plugin assumes one receiving account per shop, which matches one checkout
   server per shop.

@@ -32,7 +32,7 @@ So there are two distinct classes, and they fail differently:
    `$KBUSD` is a bank deposit, card pull or conversion through Bivo, all of which
    need Bivo KYC. Nothing on-chain reveals this.
 
-The skills describe exactly this migration ("USD on main, moving to `$KBUSD`"), and
+Keeta's `keeta-rails` reference describes exactly this migration ("USD on main, moving to `$KBUSD`"), and
 separately warn that "fiat tokens issued by a provider can carry transfer rules set
 by their issuer. To pay someone in fiat, use a payout rather than sending the token
 directly."
