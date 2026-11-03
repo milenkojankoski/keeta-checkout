@@ -4,7 +4,7 @@
  * become markup or script.
  */
 import { describe, expect, it } from 'vitest';
-import { escapeHtml, jsonForScript, newNonce, payPageCsp, renderPayPage } from '../src/http/pay-page.ts';
+import { displayAmount, escapeHtml, jsonForScript, newNonce, payPageCsp, renderPayPage } from '../src/http/pay-page.ts';
 import type { PublicSessionView } from '../src/sessions/types.ts';
 import { MERCHANT_ADDRESS, USDC } from './support/fakes.ts';
 
@@ -99,6 +99,8 @@ describe('the Content-Security-Policy', () => {
     expect(csp).toContain("script-src 'nonce-abc123'");
     expect(csp).toContain("style-src 'nonce-abc123'");
     expect(csp).toContain("img-src 'self'");
+    // The typefaces come from this server and nowhere else.
+    expect(csp).toContain("font-src 'self'");
     expect(csp).toContain("connect-src 'self'");
     expect(csp).toContain("frame-ancestors 'none'");
     expect(csp).not.toContain('unsafe-inline');
@@ -113,6 +115,15 @@ describe('the Content-Security-Policy', () => {
 
 describe('what an open session renders', () => {
   const html = render();
+
+  it('shows money with at least two decimals, and never drops a digit', () => {
+    expect(displayAmount('129.5', 6)).toBe('129.50');
+    expect(displayAmount('7', 6)).toBe('7.00');
+    expect(displayAmount('0.000001', 6)).toBe('0.000001');
+    expect(displayAmount('12.345', 6)).toBe('12.345');
+    expect(displayAmount('5', 0)).toBe('5');
+    expect(displayAmount('1.5', 1)).toBe('1.5');
+  });
 
   it('states the amount, the token and the order', () => {
     expect(html).toContain('12.5');

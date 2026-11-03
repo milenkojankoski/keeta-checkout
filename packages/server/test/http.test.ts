@@ -580,6 +580,23 @@ describe('GET /api/payments', () => {
   });
 });
 
+describe('GET /assets/fonts/:name', () => {
+  it('serves the pay page typefaces from this server, cached for a year', async () => {
+    const font = await server().get('/assets/fonts/geist-v5.woff2').buffer(true);
+    expect(font.status).toBe(200);
+    expect(font.headers['content-type']).toBe('font/woff2');
+    expect(font.headers['cache-control']).toContain('immutable');
+    // A woff2 file starts with its signature.
+    expect((font.body as Buffer).subarray(0, 4).toString('latin1')).toBe('wOF2');
+    expect((await server().get('/assets/fonts/geist-mono-v6.woff2')).status).toBe(200);
+  });
+
+  it('serves nothing else from there', async () => {
+    expect((await server().get('/assets/fonts/other.woff2')).status).toBe(404);
+    expect((await server().get('/assets/fonts/..%2Fapp.ts')).status).toBe(404);
+  });
+});
+
 describe('GET /pay/:id', () => {
   it('serves the pay page to anyone holding the session id', async () => {
     const created = await createSession();

@@ -28,6 +28,7 @@ import type { NewRefund, RefundReason, RefundStatus } from '../refunds/types.ts'
 import { toRefundView } from '../webhooks/types.ts';
 import type { DeliveryStatus } from '../webhooks/types.ts';
 import { newNonce, payPageCsp, renderPayPage } from './pay-page.ts';
+import { FONTS } from './fonts.generated.ts';
 import type { Session } from '../sessions/types.ts';
 import { requireApiKey } from './auth.ts';
 
@@ -98,6 +99,21 @@ export function createApp(options: CreateAppOptions): CheckoutApp {
   app.use(express.json({ limit: BODY_LIMIT, strict: false }));
 
   const merchantOnly = requireApiKey({ apiKeys: service.config.apiKeys });
+
+  // The pay page's typefaces. Embedded rather than read from disk, so the bundled
+  // CLI and the container carry them with no extra files; versioned names, so they
+  // can be cached for a year.
+  const fontBytes = new Map(Object.entries(FONTS).map(([name, base64]) => [name, Buffer.from(base64, 'base64')]));
+  app.get('/assets/fonts/:name', (req, res, next) => {
+    const bytes = fontBytes.get(param(req, 'name'));
+    if (bytes === undefined) {
+      next();
+      return;
+    }
+    res.type('font/woff2');
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.send(bytes);
+  });
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', network: service.config.network });
