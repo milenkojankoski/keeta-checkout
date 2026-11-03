@@ -17,6 +17,7 @@ import {
   TokenRegistry,
   configFromEnv,
   enqueueRefundChange,
+  REFUND_REASONS,
   type CheckoutConfig,
   type RefundReason,
   type SessionStore
@@ -180,10 +181,12 @@ export async function startRefundsServe(
     return 1;
   }
 
-  // Validate the limits before the key is touched, so a typo is caught without
-  // loading a seed.
+  // Validate everything that is only configuration before the key is touched, so a
+  // typo is caught without loading a seed.
   const limits = readLimits(env, io);
   if (limits === undefined) return 1;
+  const autoRefund = readAutoRefund(env, io);
+  if (autoRefund === undefined) return 1;
 
   let signerClient: InstanceType<typeof KeetaNet.UserClient>;
   try {
@@ -192,11 +195,6 @@ export async function startRefundsServe(
     io.log(`The signer seed is not usable: ${message(error)}`);
     return 1;
   }
-
-  const autoRefund = (env.KEETA_CHECKOUT_REFUND_AUTO ?? 'duplicate')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean) as RefundReason[];
 
   try {
     const token = tokenInput.trim().startsWith('keeta_')
@@ -217,10 +215,15 @@ export async function startRefundsServe(
     const signer = sdkVaultSigner(signerClient, vault.trim());
     const process_ = new RefundProcess({ store, signer, vault: vault.trim(), token, limits, autoRefund, log: console });
 
+    // Webhook writes in progress, so shutdown can wait for them before closing the
+    // store they write to.
+    const pending = new Set<Promise<unknown>>();
     const unsubscribe = process_.onChange(({ refund }) => {
-      void enqueueRefundChange(store, config, refund).catch((error: unknown) => {
+      const work = enqueueRefundChange(store, config, refund).catch((error: unknown) => {
         io.log(`Could not enqueue a refund webhook: ${message(error)}`);
       });
+      pending.add(work);
+      void work.finally(() => pending.delete(work));
     });
 
     const intervalMs = Number(env.KEETA_CHECKOUT_REFUND_INTERVAL_MS ?? 10_000);
@@ -234,8 +237,12 @@ export async function startRefundsServe(
     const stop = async (): Promise<void> => {
       if (stopping) return;
       stopping = true;
-      unsubscribe();
+      // Drain first, still subscribed: a refund that completes during shutdown must
+      // still reach the merchant as a webhook. Then wait for those writes, and only
+      // then close the store they go into.
       await process_.stop();
+      await Promise.all([...pending]);
+      unsubscribe();
       await store.close();
       await signerClient.destroy();
       resolveDone();
@@ -274,6 +281,26 @@ export async function runRefundsServe(args: ParsedArgs, env: NodeJS.ProcessEnv, 
   return 0;
 }
 
+/**
+ * The dispositions to refund without being asked. A misspelt one would match no
+ * payment and switch automatic refunds off without a word, so it is refused. Empty
+ * means none: every refund then waits to be requested.
+ */
+function readAutoRefund(env: NodeJS.ProcessEnv, io: RefundsIO): RefundReason[] | undefined {
+  const items = (env.KEETA_CHECKOUT_REFUND_AUTO ?? 'duplicate')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const known = new Set<string>(REFUND_REASONS);
+  const unknown = items.filter((item) => !known.has(item));
+  if (unknown.length > 0) {
+    io.log(`KEETA_CHECKOUT_REFUND_AUTO names ${unknown.map((item) => JSON.stringify(item)).join(', ')}, which is not a refund reason.`);
+    io.log(`Use a comma-separated list of: ${REFUND_REASONS.join(', ')}. Leave it empty to refund only on request.`);
+    return undefined;
+  }
+  return items as RefundReason[];
+}
+
 /** Read and validate the advisory limits. `undefined` means a bad value was given. */
 function readLimits(env: NodeJS.ProcessEnv, io: Log | RefundsIO): RefundLimits | undefined {
   const log = typeof io === 'function' ? io : io.log;
@@ -295,7 +322,8 @@ function readLimits(env: NodeJS.ProcessEnv, io: Log | RefundsIO): RefundLimits |
   return {
     ...(perRefund === undefined ? {} : { maxPerRefund: perRefund }),
     ...(perDay === undefined ? {} : { maxPerDay: perDay }),
-    // Roughly two network fees of head-room by default; a fee is about 0.0101 KTA.
+    // 0.02 KTA. A refund's fee measured on the test network was around 1e-11 KTA,
+    // so this is far more head-room than fees need, while still a trivial sum.
     ktaReserve: reserveRaw ?? 2n * 10n ** 16n
   };
 }

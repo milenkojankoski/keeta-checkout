@@ -154,6 +154,12 @@ reputation cost for Keeta as a payment method and not only for the shop. So
 `autoRefund` ships as `['duplicate']`. A merchant who wants every refund to be a
 decision sets it to `[]`; one who trusts the limits can add `late` or `underpaid`.
 
+Automatic refunds apply from the first time the process runs against a database,
+not from the start of the ledger. The first version scanned from zero, which a
+review caught: 0.1.0 told merchants to send duplicates back by hand, so turning
+refunds on would have paid every one of those shoppers twice. Older payments are
+refunded deliberately, through the API or the order screen.
+
 **9. One publish at a time per account, with an idempotency key on the chain.**
 
 The refund process holds a single in-flight publish for the vault at any time.

@@ -104,6 +104,8 @@ describe.skipIf(!canRun)('refund process on the Keeta test network', () => {
       token: kta,
       limits: { ktaReserve: 10n ** 15n },
       autoRefund: ['duplicate'],
+      // These payments are written before the process starts.
+      autoRefundFrom: 0,
       reconcileGraceMs: 60_000,
       log: quiet,
       ...(now === undefined ? {} : { now })

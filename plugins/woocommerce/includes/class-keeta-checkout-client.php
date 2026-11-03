@@ -89,6 +89,50 @@ class Keeta_Checkout_Client {
 	}
 
 	/**
+	 * The payments recorded against one session.
+	 *
+	 * @param string $session_id Session id.
+	 * @return array<int,array<string,mixed>>
+	 * @throws Keeta_Checkout_Client_Exception On any failure.
+	 */
+	public function list_payments( string $session_id ): array {
+		$response = $this->request( 'GET', '/api/payments?limit=200&sessionId=' . rawurlencode( $session_id ) );
+		return is_array( $response['payments'] ?? null ) ? $response['payments'] : array();
+	}
+
+	/**
+	 * The refunds of payments on one session.
+	 *
+	 * @param string $session_id Session id.
+	 * @return array<int,array<string,mixed>>
+	 * @throws Keeta_Checkout_Client_Exception On any failure.
+	 */
+	public function list_refunds( string $session_id ): array {
+		$response = $this->request( 'GET', '/api/refunds?limit=200&sessionId=' . rawurlencode( $session_id ) );
+		return is_array( $response['refunds'] ?? null ) ? $response['refunds'] : array();
+	}
+
+	/**
+	 * Ask for one payment to be refunded.
+	 *
+	 * Names the payment and nothing else: the server decides the recipient (the
+	 * payer), the token (the one they paid) and the amount (all of it, or the excess
+	 * of an overpayment). Asking twice returns the refund that already exists.
+	 *
+	 * @param string $block_hash      The payment's block.
+	 * @param int    $operation_index Its operation within that block.
+	 * @return array<string,mixed> The refund.
+	 * @throws Keeta_Checkout_Client_Exception On any failure.
+	 */
+	public function request_refund( string $block_hash, int $operation_index ): array {
+		return $this->request(
+			'POST',
+			'/api/payments/' . rawurlencode( $block_hash ) . '/refund',
+			array( 'operationIndex' => $operation_index )
+		);
+	}
+
+	/**
 	 * Which tokens this server will price a session in.
 	 *
 	 * @return array<int,array<string,mixed>>

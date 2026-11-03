@@ -251,6 +251,25 @@ describe('refunds (no network)', () => {
     expect(lines.join('\n')).toContain('KEETA_CHECKOUT_REFUND_VAULT');
   });
 
+  it('rejects a misspelt auto-refund reason rather than silently refunding nothing', async () => {
+    const result = await startRefundsServe(
+      {
+        KEETA_NETWORK: 'test',
+        KEETA_CHECKOUT_RECEIVING_ADDRESS: MERCHANT_ADDRESS,
+        KEETA_CHECKOUT_API_KEYS: 'k'.repeat(20),
+        KEETA_CHECKOUT_REFUND_VAULT: MERCHANT_ADDRESS,
+        KEETA_CHECKOUT_REFUND_TOKEN: USDC,
+        KEETA_CHECKOUT_REFUND_SIGNER_SEED: 'seed',
+        KEETA_CHECKOUT_REFUND_AUTO: 'duplicate,duplicat'
+      },
+      parseArgs(['refunds', 'serve']),
+      io
+    );
+    expect(result).toBe(1);
+    expect(lines.join('\n')).toContain('"duplicat"');
+    expect(lines.join('\n')).not.toContain('signer seed is not usable');
+  });
+
   it('rejects a non-numeric limit', async () => {
     const result = await startRefundsServe(
       {

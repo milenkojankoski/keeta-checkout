@@ -94,6 +94,12 @@ export interface RefundResultUpdate {
   at: number;
   blockHash?: string;
   lastError?: string | null;
+  /**
+   * The claim never reached a send: a limit said no, or the queue was held. The
+   * attempt the claim counted is taken back, so `attempts` is the number of sends
+   * actually tried, and does not climb every tick while a low float holds the queue.
+   */
+  notAttempted?: boolean;
 }
 
 /** The on-chain `external` for a refund, so the ledger can be reconciled from history alone. */

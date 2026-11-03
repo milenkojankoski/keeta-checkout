@@ -78,6 +78,16 @@ export interface RefundProcessOptions {
   limits: RefundLimits;
   /** Dispositions to refund without being asked. */
   autoRefund: readonly RefundReason[];
+  /**
+   * Where automatic refunds start, the first time they run against a database:
+   * payments observed after this time. Defaults to the moment they first run.
+   *
+   * Not zero, deliberately. Before refunds existed, merchants were told to send
+   * duplicates back by hand; scanning the whole ledger on first start would pay
+   * every one of those shoppers a second time. Older payments can still be refunded
+   * on purpose through `POST /api/payments/:blockHash/refund`.
+   */
+  autoRefundFrom?: number | undefined;
   /** How long a `publishing` row may stay unresolved before it is retried. */
   reconcileGraceMs?: number;
   /** How long to hold the queue after a transient refusal. */
@@ -89,7 +99,7 @@ export interface RefundProcessOptions {
 export type RefundProcessOutcome =
   | { did: 'nothing' }
   | { did: 'reconciled'; refund: Refund; found: boolean }
-  | { did: 'waiting'; refund: Refund }
+  | { did: 'waiting'; refund?: Refund }
   | { did: 'auto-requested'; refunds: Refund[] }
   | { did: 'refused'; refund: Refund; reason: string }
   | { did: 'held'; refund: Refund; reason: string }
@@ -111,6 +121,7 @@ export class RefundProcess {
   readonly #token: string;
   readonly #limits: RefundLimits;
   readonly #autoRefund: ReadonlySet<RefundReason>;
+  readonly #autoRefundFrom: number | undefined;
   readonly #graceMs: number;
   readonly #holdMs: number;
   readonly #log: Pick<Console, 'error' | 'warn' | 'info'>;
@@ -128,6 +139,7 @@ export class RefundProcess {
     this.#token = options.token;
     this.#limits = options.limits;
     this.#autoRefund = new Set(options.autoRefund);
+    this.#autoRefundFrom = options.autoRefundFrom;
     this.#graceMs = options.reconcileGraceMs ?? 60_000;
     this.#holdMs = options.holdMs ?? 60_000;
     this.#log = options.log ?? console;
@@ -178,6 +190,12 @@ export class RefundProcess {
   async #runOnce(): Promise<RefundProcessOutcome> {
     const now = this.#now();
 
+    // A transient refusal holds the queue. Nothing can be in flight while it does:
+    // a hold is only set by a claim that sent nothing, and this process is the only
+    // writer of `publishing`. So there is nothing to reconcile either, and the step
+    // waits without claiming instead of churning a row every tick.
+    if (now < this.#heldUntil) return { did: 'waiting' };
+
     // 1. Anything in flight comes first, and alone.
     const claim = await this.#store.claimNextRefund(now);
     if (claim !== undefined && !claim.claimed) return this.#reconcile(claim.refund, now);
@@ -191,21 +209,25 @@ export class RefundProcess {
     }
 
     const refund = claim.refund;
-    if (now < this.#heldUntil) {
-      // A transient refusal is still holding the queue. Put it back untouched.
-      await this.#store.recordRefundResult(refund.id, { status: 'requested', at: now });
-      return { did: 'waiting', refund };
-    }
-
     const verdict = await this.#checkLimits(refund, now);
     if (verdict.kind === 'refused') {
-      const updated = await this.#store.recordRefundResult(refund.id, { status: 'refused', at: now, lastError: verdict.reason });
+      const updated = await this.#store.recordRefundResult(refund.id, {
+        status: 'refused',
+        at: now,
+        lastError: verdict.reason,
+        notAttempted: true
+      });
       this.#log.warn(`[keeta-checkout] refund ${refund.id} refused: ${verdict.reason}`);
       this.#emit(updated);
       return { did: 'refused', refund: updated, reason: verdict.reason };
     }
     if (verdict.kind === 'held') {
-      const updated = await this.#store.recordRefundResult(refund.id, { status: 'requested', at: now, lastError: verdict.reason });
+      const updated = await this.#store.recordRefundResult(refund.id, {
+        status: 'requested',
+        at: now,
+        lastError: verdict.reason,
+        notAttempted: true
+      });
       this.#heldUntil = now + this.#holdMs;
       this.#log.warn(`[keeta-checkout] refund ${refund.id} held: ${verdict.reason}`);
       return { did: 'held', refund: updated, reason: verdict.reason };
@@ -221,7 +243,16 @@ export class RefundProcess {
     } catch (error) {
       const reason = describe(error);
       if (isCleanRejection(error)) {
-        // The network answered, and the answer was no. Nothing was published.
+        // The network answered no. But an SDK retry can throw after the block has
+        // already landed (measured: a fee retry did exactly this), and a wrong
+        // "failed" invites a second refund. So look before saying so.
+        const landed = await this.#findOnChain(refund).catch(() => undefined);
+        if (landed !== undefined) {
+          const updated = await this.#store.recordRefundResult(refund.id, { status: 'published', at: this.#now(), blockHash: landed, lastError: null });
+          this.#log.warn(`[keeta-checkout] refund ${refund.id} reported "${reason}" but is on chain in ${landed}; recorded as published`);
+          this.#emit(updated);
+          return { did: 'published', refund: updated };
+        }
         const updated = await this.#store.recordRefundResult(refund.id, { status: 'failed', at: this.#now(), lastError: reason });
         this.#log.error(`[keeta-checkout] refund ${refund.id} failed: ${reason}`);
         this.#emit(updated);
@@ -316,7 +347,16 @@ export class RefundProcess {
   /** Turn the merchant's `autoRefund` setting into rows, reading the ledger. */
   async #autoRequest(now: number): Promise<Refund[]> {
     if (this.#autoRefund.size === 0) return [];
-    const since = Number((await this.#store.getMeta(AUTO_SCAN_META_KEY)) ?? '0');
+    let since: number;
+    const stored = await this.#store.getMeta(AUTO_SCAN_META_KEY);
+    if (stored === undefined) {
+      // First run against this database: start now, not at the beginning of the
+      // ledger. See `autoRefundFrom`.
+      since = this.#autoRefundFrom ?? now;
+      await this.#store.setMeta(AUTO_SCAN_META_KEY, String(since));
+    } else {
+      since = Number(stored);
+    }
     const dispositions = [...this.#autoRefund].filter((reason): reason is Exclude<RefundReason, 'overpaid'> => reason !== 'overpaid');
     const created: Refund[] = [];
     let newest = since;

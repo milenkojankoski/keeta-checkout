@@ -6,7 +6,8 @@
  * event. Two endpoints means two deliveries of the same event, each with its own
  * retry state, and each carrying the same `event.id` so a merchant can dedupe.
  */
-import type { MerchantSessionView, SessionStatus } from '../sessions/types.ts';
+import type { MerchantSessionView, Session, SessionStatus } from '../sessions/types.ts';
+import { formatBaseUnits } from '../amounts.ts';
 import type { PaymentDisposition } from '../sessions/store.ts';
 import type { Refund, RefundOrigin, RefundReason, RefundStatus } from '../refunds/types.ts';
 import { EXPLORER_URL, type KeetaNetworkName } from '../config.ts';
@@ -77,9 +78,23 @@ export interface WebhookRefundView {
   updatedAt: string;
   publishedAt: string | null;
   explorerUrl: string | null;
+  /** The order the refunded payment belongs to, when it was matched to a session. */
+  orderId: string | null;
+  /**
+   * The amount as a decimal, and the token's ticker, when the session says what the
+   * token is. Null for a payment in a different token from its session's, whose
+   * decimals this server cannot vouch for; the base-unit `amount` is always there.
+   */
+  amountDecimal: string | null;
+  tokenTicker: string | null;
 }
 
-export function toRefundView(refund: Refund, network: KeetaNetworkName): WebhookRefundView {
+/**
+ * A refund as a merchant sees it. Pass the refunded payment's session, when there is
+ * one, so the view can name the order and show the amount in the token's own units.
+ */
+export function toRefundView(refund: Refund, network: KeetaNetworkName, session?: Session): WebhookRefundView {
+  const sameToken = session !== undefined && session.tokenAddress === refund.tokenAddress ? session : undefined;
   return {
     id: refund.id,
     paymentBlockHash: refund.paymentBlockHash,
@@ -97,7 +112,10 @@ export function toRefundView(refund: Refund, network: KeetaNetworkName): Webhook
     createdAt: new Date(refund.createdAt).toISOString(),
     updatedAt: new Date(refund.updatedAt).toISOString(),
     publishedAt: refund.publishedAt === null ? null : new Date(refund.publishedAt).toISOString(),
-    explorerUrl: refund.blockHash === null ? null : `${EXPLORER_URL[network]}/block/${refund.blockHash}`
+    explorerUrl: refund.blockHash === null ? null : `${EXPLORER_URL[network]}/block/${refund.blockHash}`,
+    orderId: session?.orderId ?? null,
+    amountDecimal: sameToken === undefined ? null : formatBaseUnits(refund.amount, sameToken.tokenDecimals),
+    tokenTicker: sameToken === undefined ? null : sameToken.tokenTicker
   };
 }
 

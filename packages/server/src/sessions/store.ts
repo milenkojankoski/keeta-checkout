@@ -312,6 +312,10 @@ export function applyRefundResult(refund: Refund, result: RefundResultUpdate): R
     next.publishedAt = result.at;
   }
   if (result.status === 'requested') next.attemptStartedAt = null;
+  if (result.notAttempted === true && refund.status === 'publishing') {
+    next.attempts = Math.max(0, refund.attempts - 1);
+    next.attemptStartedAt = null;
+  }
   return next;
 }
 

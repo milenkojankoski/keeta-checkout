@@ -59,6 +59,16 @@ $WP option update woocommerce_enable_guest_checkout 'yes' >/dev/null
 # Skip the setup wizard and the marketing nags.
 $WP option update woocommerce_onboarding_profile '{"skipped":true}' --format=json >/dev/null 2>&1 || true
 $WP option set woocommerce_task_list_hidden yes >/dev/null 2>&1 || true
+# Launch the store. WooCommerce 11 starts new stores in "Coming soon" mode, which
+# shows visitors who are not logged in an empty shop: the product is there, but
+# only the admin can see it.
+$WP option update woocommerce_coming_soon 'no' >/dev/null
+# The shop is the home page, so the site opens on something to buy.
+SHOP_PAGE=$($WP option get woocommerce_shop_page_id 2>/dev/null || true)
+if [ -n "$SHOP_PAGE" ]; then
+  $WP option update show_on_front 'page' >/dev/null
+  $WP option update page_on_front "$SHOP_PAGE" >/dev/null
+fi
 
 say 'Keeta Checkout plugin'
 $WP plugin activate keeta-checkout-for-woocommerce

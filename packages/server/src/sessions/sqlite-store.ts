@@ -742,9 +742,9 @@ export class SqliteSessionStore implements SessionStore {
       const next = applyRefundResult(toRefund(row), result);
       this.#db
         .prepare(
-          `UPDATE refunds SET status = ?, attempt_started_at = ?, block_hash = ?, last_error = ?, updated_at = ?, published_at = ? WHERE id = ?`
+          `UPDATE refunds SET status = ?, attempts = ?, attempt_started_at = ?, block_hash = ?, last_error = ?, updated_at = ?, published_at = ? WHERE id = ?`
         )
-        .run(next.status, next.attemptStartedAt, next.blockHash, next.lastError, next.updatedAt, next.publishedAt, id);
+        .run(next.status, next.attempts, next.attemptStartedAt, next.blockHash, next.lastError, next.updatedAt, next.publishedAt, id);
       return next;
     });
   }

@@ -28,6 +28,8 @@ require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-amount.php';
 require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-signature.php';
 require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-client.php';
 require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-webhook.php';
+require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-refund-rows.php';
+require_once KEETA_CHECKOUT_PATH . 'includes/class-keeta-checkout-admin-refunds.php';
 
 /**
  * Declare what this plugin is compatible with.
@@ -92,6 +94,11 @@ add_filter(
 );
 
 add_action( 'rest_api_init', array( 'Keeta_Checkout_Webhook', 'register_route' ) );
+
+// The Keeta panel on an order, with its refund button. Admin and admin-ajax only.
+if ( is_admin() ) {
+	Keeta_Checkout_Admin_Refunds::register();
+}
 
 /**
  * Tell the merchant plainly when WooCommerce is missing, rather than failing

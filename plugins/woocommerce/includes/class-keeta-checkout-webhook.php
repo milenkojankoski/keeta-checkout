@@ -102,6 +102,12 @@ class Keeta_Checkout_Webhook {
 		$event_type = (string) $event['type'];
 		$session    = is_array( $event['data']['session'] ?? null ) ? $event['data']['session'] : null;
 		$payment    = is_array( $event['data']['payment'] ?? null ) ? $event['data']['payment'] : null;
+		$refund     = is_array( $event['data']['refund'] ?? null ) ? $event['data']['refund'] : null;
+
+		// A refund of a payment on this shop's order: a note on that order, nothing more.
+		if ( null !== $refund && 0 === strpos( $event_type, 'refund.' ) ) {
+			return self::handle_refund( $gateway, $event_id, $event_type, $refund );
+		}
 
 		// A payment that names no session cannot be tied to an order. It still
 		// needs a human, so it goes in the log and the server's own ledger holds it.
@@ -197,7 +203,7 @@ class Keeta_Checkout_Webhook {
 			case 'checkout.session.unmatched':
 				$order->add_order_note(
 					__(
-						'Keeta reported money arriving that could not be matched to this order: a late or duplicate payment. Check /api/payments on the checkout server and refund it.',
+						'Keeta reported money arriving that could not be matched to this order: a late or duplicate payment. Refund it from the Keeta panel on this order.',
 						'keeta-checkout'
 					)
 				);
@@ -218,7 +224,7 @@ class Keeta_Checkout_Webhook {
 					);
 					if ( true === ( $payment['refundable'] ?? false ) ) {
 						$order->add_order_note(
-							__( 'That money is sitting with you and should be refunded.', 'keeta-checkout' )
+							__( 'That money is sitting with you and should go back: use the Keeta panel on this order.', 'keeta-checkout' )
 						);
 					}
 					$order->save();
@@ -343,14 +349,117 @@ class Keeta_Checkout_Webhook {
 			return null;
 		}
 
+		return in_array( $session_id, self::order_session_ids( $order ), true ) ? $order : null;
+	}
+
+	/**
+	 * Every Keeta session an order has had, current one included.
+	 *
+	 * @param WC_Order $order The order.
+	 * @return string[]
+	 */
+	public static function order_session_ids( WC_Order $order ): array {
 		$known   = $order->get_meta( WC_Gateway_Keeta_Checkout::SESSIONS_META );
 		$known   = is_array( $known ) ? $known : array();
 		$current = (string) $order->get_meta( WC_Gateway_Keeta_Checkout::SESSION_META );
 		if ( '' !== $current ) {
 			$known[] = $current;
 		}
+		$ids = array();
+		foreach ( $known as $id ) {
+			if ( is_string( $id ) && '' !== $id && ! in_array( $id, $ids, true ) ) {
+				$ids[] = $id;
+			}
+		}
+		return $ids;
+	}
 
-		return in_array( $session_id, $known, true ) ? $order : null;
+	/**
+	 * A `refund.*` event: a note on the order the refunded payment belongs to.
+	 *
+	 * Never changes the order's status or records a WooCommerce refund. The money
+	 * going back is a second payment, a shortfall, or an excess, none of which was
+	 * part of the order total; booking it against the order would make a paid order
+	 * look partly refunded.
+	 *
+	 * @param WC_Gateway_Keeta_Checkout $gateway    The gateway, for logging.
+	 * @param string                    $event_id   The event id.
+	 * @param string                    $event_type The event type.
+	 * @param array<string,mixed>       $refund     The refund view.
+	 * @return WP_REST_Response
+	 */
+	private static function handle_refund( WC_Gateway_Keeta_Checkout $gateway, string $event_id, string $event_type, array $refund ): WP_REST_Response {
+		$order_id   = (string) ( $refund['orderId'] ?? '' );
+		$session_id = (string) ( $refund['sessionId'] ?? '' );
+		$refund_id  = (string) ( $refund['id'] ?? '?' );
+
+		if ( '' === $order_id || '' === $session_id || ! function_exists( 'wc_get_order' ) ) {
+			$gateway->log( sprintf( 'refund %s is not for a payment on an order; nothing to note', $refund_id ) );
+			return new WP_REST_Response( array( 'received' => true ), 200 );
+		}
+
+		// As with payments: only an order that created this session may be written to.
+		$order = wc_get_order( $order_id );
+		if ( ! $order instanceof WC_Order || ! in_array( $session_id, self::order_session_ids( $order ), true ) ) {
+			$gateway->log( sprintf( 'refund %s names order %s, which did not create session %s', $refund_id, $order_id, $session_id ) );
+			return new WP_REST_Response( array( 'received' => true, 'matched' => false ), 200 );
+		}
+
+		if ( self::already_handled( $order, $event_id ) ) {
+			return new WP_REST_Response( array( 'received' => true, 'duplicate' => true ), 200 );
+		}
+
+		$amount = self::refund_amount( $refund );
+		$to     = (string) ( $refund['to'] ?? '?' );
+		$error  = is_string( $refund['lastError'] ?? null ) ? $refund['lastError'] : '';
+		$note   = null;
+
+		switch ( $event_type ) {
+			case 'refund.requested':
+				$note = 'auto' === ( $refund['origin'] ?? '' )
+					/* translators: 1: amount, 2: payer address. */
+					? sprintf( __( 'Keeta is refunding %1$s to %2$s automatically: it was paid twice.', 'keeta-checkout' ), $amount, $to )
+					/* translators: 1: amount, 2: payer address. */
+					: sprintf( __( 'Keeta refund of %1$s to %2$s requested.', 'keeta-checkout' ), $amount, $to );
+				break;
+			case 'refund.published':
+				/* translators: 1: amount, 2: payer address, 3: explorer URL. */
+				$note = sprintf( __( 'Keeta refund sent: %1$s back to %2$s. %3$s', 'keeta-checkout' ), $amount, $to, (string) ( $refund['explorerUrl'] ?? '' ) );
+				break;
+			case 'refund.failed':
+				/* translators: 1: amount, 2: reason. */
+				$note = sprintf( __( 'Keeta refund of %1$s failed: %2$s. The money is still in your refund float; return it from your wallet.', 'keeta-checkout' ), $amount, $error );
+				break;
+			case 'refund.refused':
+				/* translators: 1: amount, 2: reason. */
+				$note = sprintf( __( 'Keeta refund of %1$s was not sent: %2$s. Return it from your wallet.', 'keeta-checkout' ), $amount, $error );
+				break;
+			default:
+				$gateway->log( sprintf( 'ignoring unknown refund event %s', $event_type ) );
+		}
+
+		if ( null !== $note ) {
+			$order->add_order_note( trim( $note ) );
+		}
+		self::remember( $order, $event_id );
+
+		return new WP_REST_Response( array( 'received' => true ), 200 );
+	}
+
+	/**
+	 * `0.8 USDC`, or base units when the server could not say what the token is.
+	 *
+	 * @param array<string,mixed> $refund The refund view.
+	 * @return string
+	 */
+	private static function refund_amount( array $refund ): string {
+		$decimal = $refund['amountDecimal'] ?? null;
+		if ( is_string( $decimal ) && '' !== $decimal ) {
+			$ticker = is_string( $refund['tokenTicker'] ?? null ) ? ltrim( $refund['tokenTicker'], '$' ) : '';
+			return trim( $decimal . ' ' . $ticker );
+		}
+		/* translators: %s: an amount in base units. */
+		return sprintf( __( '%s base units', 'keeta-checkout' ), (string) ( $refund['amount'] ?? '?' ) );
 	}
 
 	/**

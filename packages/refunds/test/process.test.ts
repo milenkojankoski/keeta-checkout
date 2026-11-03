@@ -36,7 +36,7 @@ class FakeVault implements VaultSigner {
   sends: Array<{ to: string; amount: bigint; token: string; external: string }> = [];
   chain: HistoryEntryLike[] = [];
   /** What the next send does: publish, reject cleanly, or vanish. */
-  nextSend: 'publish' | 'reject' | 'vanish' | 'reject-balance' = 'publish';
+  nextSend: 'publish' | 'reject' | 'vanish' | 'reject-balance' | 'land-then-reject' = 'publish';
   balanceError: Error | undefined;
   #seq = 0;
 
@@ -48,6 +48,11 @@ class FakeVault implements VaultSigner {
       );
     }
     if (this.nextSend === 'reject-balance') {
+      return Promise.reject(new Error('Resulting balance becomes negative at one+ point(s) during this transaction'));
+    }
+    if (this.nextSend === 'land-then-reject') {
+      // What a retry inside the SDK can do: the block lands, then the call throws.
+      this.publishOnChain(external, to, amount, token);
       return Promise.reject(new Error('Resulting balance becomes negative at one+ point(s) during this transaction'));
     }
     if (this.nextSend === 'vanish') return Promise.reject(new TypeError('fetch failed'));
@@ -134,7 +139,16 @@ function payment(overrides: Partial<PaymentRow> = {}): PaymentRow {
   };
 }
 
-function build(options: { autoRefund?: Array<NewRefund['reason']>; maxPerRefund?: bigint; maxPerDay?: bigint; ktaReserve?: bigint } = {}) {
+function build(
+  options: {
+    autoRefund?: Array<NewRefund['reason']>;
+    maxPerRefund?: bigint;
+    maxPerDay?: bigint;
+    ktaReserve?: bigint;
+    /** Use the production default for where auto-refunds start, instead of the beginning. */
+    autoFromNow?: boolean;
+  } = {}
+) {
   const store = new MemorySessionStore();
   const vault = new FakeVault();
   let now = T0 + 10_000;
@@ -153,6 +167,7 @@ function build(options: { autoRefund?: Array<NewRefund['reason']>; maxPerRefund?
     token: USDC,
     limits: { maxPerRefund: options.maxPerRefund, maxPerDay: options.maxPerDay, ktaReserve: options.ktaReserve ?? 10n ** 16n },
     autoRefund: options.autoRefund ?? [],
+    autoRefundFrom: options.autoFromNow === true ? undefined : 0,
     reconcileGraceMs: 60_000,
     holdMs: 30_000,
     log,
@@ -191,6 +206,8 @@ describe('RefundProcess', () => {
     expect(vault.sends).toEqual([]);
     expect((await store.getRefund('rf_a'))?.status).toBe('refused');
     expect((await store.getRefund('rf_a'))?.lastError).toContain('the vault pays');
+    // Nothing was sent, so nothing was attempted.
+    expect((await store.getRefund('rf_a'))?.attempts).toBe(0);
   });
 
   it('refuses, permanently, a refund over the per-refund cap', async () => {
@@ -216,6 +233,8 @@ describe('RefundProcess', () => {
     clock.advance(31_000);
     vault.balances.set(USDC, 10_000_000n);
     expect((await process.runOnce()).did).toBe('published');
+    // The hold cost no attempts: one send, one attempt.
+    expect((await store.getRefund('rf_a'))?.attempts).toBe(1);
   });
 
   it('holds when the signer cannot pay the fee', async () => {
@@ -255,6 +274,35 @@ describe('RefundProcess', () => {
     // A day later the window has moved on.
     clock.advance(24 * 60 * 60 * 1000 + 1);
     expect((await process.runOnce()).did).toBe('published');
+  });
+
+  it('does not auto-refund payments recorded before auto-refunds first started', async () => {
+    // A merchant on 0.1.0 was told to send duplicates back by hand. Turning refunds
+    // on must not pay those shoppers a second time.
+    const { store, vault, process, clock } = build({ autoRefund: ['duplicate'], autoFromNow: true });
+    await store.recordPayment(payment({ blockHash: 'OLD', disposition: 'duplicate', amount: 700n, observedAt: T0 + 1 }));
+
+    expect((await process.runOnce()).did).toBe('nothing');
+    expect(await store.listRefunds()).toEqual([]);
+
+    // One that arrives afterwards is refunded as usual.
+    clock.advance(1_000);
+    await store.recordPayment(payment({ blockHash: 'NEW', disposition: 'duplicate', amount: 800n, observedAt: clock.now() }));
+    expect((await process.runOnce()).did).toBe('auto-requested');
+    expect((await process.runOnce()).did).toBe('published');
+    expect(vault.sends.map((send) => send.amount)).toEqual([800n]);
+  });
+
+  it('records a refund that landed and then threw as published, not failed', async () => {
+    const { store, vault, process } = build();
+    vault.nextSend = 'land-then-reject';
+    await store.createRefund(request());
+    const outcome = await process.runOnce();
+    expect(outcome.did).toBe('published');
+    const refund = await store.getRefund('rf_a');
+    expect(refund?.status).toBe('published');
+    expect(refund?.blockHash).toBe('RB1');
+    expect(vault.sends).toHaveLength(1);
   });
 
   it('records a clean rejection as failed and never retries it', async () => {

@@ -2,10 +2,11 @@
  * The `refunds` CLI, end to end on the Keeta test network.
  *
  * `refunds init` creates a real vault and prints the three environment variables.
- * Those variables, a funded vault and signer, and a duplicate payment written into
- * a shared SQLite file drive `startRefundsServe`, which refunds the payment back to
- * the payer. The shared file is the design from docs/decisions/0014: the checkout
- * server and the refund process are two processes over one database.
+ * With those, and a funded vault and signer, `startRefundsServe` runs against a
+ * SQLite file. A duplicate payment is then written into that same file through a
+ * second connection while the process is running, as the checkout server's watcher
+ * would, and the process refunds it back to the payer. That is the deployment the
+ * design describes: two processes over one database (docs/decisions/0014).
  *
  * Publishes real blocks and spends a little test KTA. Skipped without the seeds.
  */
@@ -58,7 +59,7 @@ describe.skipIf(!canRun)('refunds CLI on the Keeta test network', () => {
   }
 
   it(
-    'inits a vault, then the served process refunds a recorded duplicate to the payer',
+    'inits a vault, then the running process refunds a duplicate the watcher records',
     async () => {
       const kta = merchant.baseToken.publicKeyString.get();
 
@@ -80,31 +81,14 @@ describe.skipIf(!canRun)('refunds CLI on the Keeta test network', () => {
       await merchant.send(Account.fromPublicKeyString(vault), 5n * 10n ** 16n, merchant.baseToken, 'cli float');
       await merchant.send(Account.fromPublicKeyString(signerAddress), 3n * 10n ** 16n, merchant.baseToken, 'cli fees');
 
-      // 3. Write a duplicate payment into the shared database, then close it so the
-      // served process can open the same file without a lock fight.
+      // 3. Start the process against a database file, with a webhook endpoint so the
+      // refund events have somewhere to be queued.
       const dbFile = join(directory, 'shared.sqlite');
-      const seed = new SqliteSessionStore({ filename: dbFile });
-      const payment: PaymentRow = {
-        blockHash: 'CLI_DUP',
-        operationIndex: 0,
-        from: payerAddress,
-        to: merchant.account.publicKeyString.get(),
-        tokenAddress: kta,
-        amount: 10n ** 15n,
-        external: 'kc_cli',
-        blockDate: Date.now(),
-        sessionId: null,
-        disposition: 'duplicate',
-        observedAt: Date.now()
-      };
-      await seed.recordPayment(payment);
-      await seed.close();
-
-      // 4. Start the served process against that file and let its timer run.
       const env: NodeJS.ProcessEnv = {
         KEETA_NETWORK: 'test',
         KEETA_CHECKOUT_RECEIVING_ADDRESS: merchant.account.publicKeyString.get(),
         KEETA_CHECKOUT_API_KEYS: 'k'.repeat(20),
+        KEETA_CHECKOUT_WEBHOOKS: `http://127.0.0.1:9/hook|${'s'.repeat(24)}|refund.requested,refund.published`,
         KEETA_CHECKOUT_REFUND_VAULT: vault,
         KEETA_CHECKOUT_REFUND_TOKEN: token,
         KEETA_CHECKOUT_REFUND_SIGNER_SEED: signerSeed,
@@ -113,31 +97,60 @@ describe.skipIf(!canRun)('refunds CLI on the Keeta test network', () => {
         KEETA_CHECKOUT_REFUND_INTERVAL_MS: '2000',
         KEETA_CHECKOUT_DATABASE: dbFile
       };
-      const payerBefore = await payer.balance(payer.baseToken);
       const handle = await startRefundsServe(env, parseArgs(['refunds', 'serve']), io);
       expect(typeof handle).not.toBe('number');
       if (typeof handle === 'number') return;
 
+      const amount = 10n ** 15n;
       try {
-        // The timer auto-requests, then publishes. Wait for the payer to be paid.
+        // Let the first step set where automatic refunds start (now), so the
+        // payment below is unambiguously newer.
+        await sleep(1_000);
+
+        // 4. The watcher records a duplicate, through its own connection to the
+        // same file, while the refund process is running.
+        const watcherSide = new SqliteSessionStore({ filename: dbFile });
+        const payment: PaymentRow = {
+          blockHash: 'CLI_DUP',
+          operationIndex: 0,
+          from: payerAddress,
+          to: merchant.account.publicKeyString.get(),
+          tokenAddress: kta,
+          amount,
+          external: 'kc_cli',
+          blockDate: Date.now(),
+          sessionId: null,
+          disposition: 'duplicate',
+          observedAt: Date.now()
+        };
+        const payerBefore = await payer.balance(payer.baseToken);
+        await watcherSide.recordPayment(payment);
+        await watcherSide.close();
+
+        // 5. The process requests it, then publishes it. Wait for the payer.
         let paid = false;
         for (let attempt = 0; attempt < 40 && !paid; attempt++) {
           await sleep(2_000);
-          paid = (await payer.balance(payer.baseToken)) === payerBefore + payment.amount;
+          paid = (await payer.balance(payer.baseToken)) === payerBefore + amount;
         }
         expect(paid).toBe(true);
       } finally {
         await handle.stop();
       }
 
-      // 5. The shared database records the refund as published, with a block hash.
+      // 6. The ledger has it published, and both refund events were queued for the
+      // checkout server's dispatcher to send.
       const after = new SqliteSessionStore({ filename: dbFile });
       try {
         const refunds = await after.listRefunds();
         expect(refunds).toHaveLength(1);
         expect(refunds[0]?.status).toBe('published');
         expect(refunds[0]?.to).toBe(payerAddress);
+        expect(refunds[0]?.attempts).toBe(1);
         expect(refunds[0]?.blockHash).toMatch(/^[0-9A-F]+$/i);
+
+        const queued = (await after.listDeliveries()).map((delivery) => delivery.eventType).sort();
+        expect(queued).toEqual(['refund.published', 'refund.requested']);
       } finally {
         await after.close();
       }

@@ -389,14 +389,22 @@ export async function enqueueWebhookEvent(
   return created;
 }
 
-/** A refund status change, when it maps to an event. Used by the refund process. */
-export function enqueueRefundChange(
-  store: Pick<SessionStore, 'enqueueDelivery'>,
+/**
+ * A refund status change, when it maps to an event. Used by the refund process.
+ *
+ * Reads the refunded payment's session so the event names the order: a shop's
+ * webhook handler is keyed on orders, and a refund event it cannot place is one it
+ * can only log.
+ */
+export async function enqueueRefundChange(
+  store: Pick<SessionStore, 'enqueueDelivery' | 'get'>,
   config: Pick<CheckoutConfig, 'network' | 'webhookEndpoints'>,
   refund: Refund,
   now: number = Date.now()
 ): Promise<WebhookDelivery[]> {
   const type = EVENT_TYPE_BY_REFUND_STATUS[refund.status];
-  if (type === undefined) return Promise.resolve([]);
-  return enqueueWebhookEvent(store, config, type, { refund: toRefundView(refund, config.network) }, now);
+  if (type === undefined) return [];
+  if (!config.webhookEndpoints.some((endpoint) => endpoint.events.includes(type))) return [];
+  const session = refund.sessionId === null ? undefined : await store.get(refund.sessionId);
+  return enqueueWebhookEvent(store, config, type, { refund: toRefundView(refund, config.network, session) }, now);
 }

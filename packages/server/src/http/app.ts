@@ -208,7 +208,8 @@ export function createApp(options: CreateAppOptions): CheckoutApp {
         createdAt: Date.now()
       };
       const { created, refund } = await service.store.createRefund(request);
-      res.status(created ? 201 : 200).json(toRefundView(refund, service.config.network));
+      const session = payment.sessionId === null ? undefined : await service.store.get(payment.sessionId);
+      res.status(created ? 201 : 200).json(toRefundView(refund, service.config.network, session));
     } catch (error) {
       next(error);
     }
@@ -228,7 +229,18 @@ export function createApp(options: CreateAppOptions): CheckoutApp {
         ...(sessionId === undefined ? {} : { sessionId }),
         ...(limitParam === undefined ? {} : { limit: limitParam })
       });
-      res.json({ refunds: refunds.map((refund) => toRefundView(refund, service.config.network)) });
+      // One session read per distinct session, not per refund.
+      const sessions = new Map<string, Session | undefined>();
+      const views = [];
+      for (const refund of refunds) {
+        let session: Session | undefined;
+        if (refund.sessionId !== null) {
+          if (!sessions.has(refund.sessionId)) sessions.set(refund.sessionId, await service.store.get(refund.sessionId));
+          session = sessions.get(refund.sessionId);
+        }
+        views.push(toRefundView(refund, service.config.network, session));
+      }
+      res.json({ refunds: views });
     } catch (error) {
       next(error);
     }

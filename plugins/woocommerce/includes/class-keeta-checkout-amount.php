@@ -304,6 +304,34 @@ class Keeta_Checkout_Amount {
 	}
 
 	/**
+	 * Base units as a decimal: `1500000` with 6 decimals is `1.5`.
+	 *
+	 * Pure string arithmetic, like the server's own `formatBaseUnits`, so an amount
+	 * with eighteen decimals is shown exactly rather than through a float.
+	 *
+	 * @param string $base_units A whole number of base units.
+	 * @param int    $decimals   The token's decimals.
+	 * @return string
+	 * @throws Keeta_Checkout_Amount_Exception If either is not usable.
+	 */
+	public static function format_base_units( string $base_units, int $decimals ): string {
+		if ( 1 !== preg_match( '/^\d+$/', $base_units ) || $decimals < 0 ) {
+			throw new Keeta_Checkout_Amount_Exception( sprintf( 'cannot format %s base units with %d decimals', $base_units, $decimals ) );
+		}
+		$digits = ltrim( $base_units, '0' );
+		if ( '' === $digits ) {
+			return '0';
+		}
+		if ( 0 === $decimals ) {
+			return $digits;
+		}
+		$digits   = str_pad( $digits, $decimals + 1, '0', STR_PAD_LEFT );
+		$whole    = substr( $digits, 0, -$decimals );
+		$fraction = rtrim( substr( $digits, -$decimals ), '0' );
+		return '' === $fraction ? $whole : $whole . '.' . $fraction;
+	}
+
+	/**
 	 * Whether a token is a plausible pairing for a store currency.
 	 *
 	 * An unknown currency returns true: there is nothing to compare against, and a

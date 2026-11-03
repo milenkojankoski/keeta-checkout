@@ -180,6 +180,15 @@ reason to wait. Underpaid and late payments are refunded only when you ask, with
 anyway. `GET /api/refunds` lists what has gone out. Change the automatic set with
 `KEETA_CHECKOUT_REFUND_AUTO` (comma-separated, or empty for none).
 
+Automatic refunds start from the moment `refunds serve` first runs. Duplicates that
+arrived before then are not refunded automatically, because you may already have
+sent them back by hand; refund any that are still owed from the order screen.
+
+In WooCommerce, each order paid with Keeta has a Keeta panel listing its payments.
+A second payment, a short or late one, or the excess of an overpayment gets a
+**Refund** button; once pressed, the panel follows the refund until it is on chain,
+and the order notes record who asked and the explorer link.
+
 A refund can only ever go back to the payer, in the token they paid, for at most
 what they paid: there is no way to send an arbitrary amount anywhere through this.
 To stop refunds instantly, revoke the delegation from your wallet; the float and the

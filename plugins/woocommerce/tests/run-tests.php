@@ -22,6 +22,7 @@ define( 'KEETA_CHECKOUT_TESTING', true );
 
 require_once __DIR__ . '/../includes/class-keeta-checkout-amount.php';
 require_once __DIR__ . '/../includes/class-keeta-checkout-signature.php';
+require_once __DIR__ . '/../includes/class-keeta-checkout-refund-rows.php';
 
 final class Tests {
 
@@ -359,5 +360,105 @@ if ( is_readable( $fixtures_path ) ) {
 	fwrite( STDERR, "note: fixtures.json is missing, so cross-language agreement was not checked\n" );
 	fwrite( STDERR, "      regenerate it with: pnpm tsx tools/webhook-fixtures.ts\n" );
 }
+
+// ---------------------------------------------------------------------------
+// Base units, as the panel shows them.
+
+$t->same( 'format: 1500000 with 6 decimals', '1.5', Keeta_Checkout_Amount::format_base_units( '1500000', 6 ) );
+$t->same( 'format: 1 with 6 decimals', '0.000001', Keeta_Checkout_Amount::format_base_units( '1', 6 ) );
+$t->same( 'format: one KTA, 18 decimals', '1', Keeta_Checkout_Amount::format_base_units( '1000000000000000000', 18 ) );
+$t->same( 'format: 18 decimals, no float', '123456789.123456789123456789', Keeta_Checkout_Amount::format_base_units( '123456789123456789123456789', 18 ) );
+$t->same( 'format: zero', '0', Keeta_Checkout_Amount::format_base_units( '000', 6 ) );
+$t->same( 'format: no decimals', '42', Keeta_Checkout_Amount::format_base_units( '0042', 0 ) );
+$t->throws( 'format: refuses a decimal', static fn() => Keeta_Checkout_Amount::format_base_units( '1.5', 6 ) );
+$t->throws( 'format: refuses a negative', static fn() => Keeta_Checkout_Amount::format_base_units( '-1', 6 ) );
+
+// ---------------------------------------------------------------------------
+// Which payments on an order get a refund button, and for how much.
+
+$usdc     = 'keeta_usdc';
+$sessions = array(
+	'cs_1' => array( 'id' => 'cs_1', 'tokenAddress' => $usdc, 'tokenTicker' => '$USDC', 'tokenDecimals' => 6, 'overpaidBy' => '250000', 'network' => 'test' ),
+);
+$pay = static function ( string $hash, string $disposition, string $amount, string $date, array $extra = array() ) use ( $usdc ): array {
+	return array_merge(
+		array(
+			'blockHash'      => $hash,
+			'operationIndex' => 0,
+			'from'           => 'keeta_payer',
+			'tokenAddress'   => $usdc,
+			'amount'         => $amount,
+			'disposition'    => $disposition,
+			'explorerUrl'    => 'https://explorer.test.keeta.com/block/' . $hash,
+			'blockDate'      => $date,
+			'sessionId'      => 'cs_1',
+		),
+		$extra
+	);
+};
+$payments = array(
+	$pay( 'DUP', 'duplicate', '800000', '2026-11-03T10:02:00.000Z' ),
+	$pay( 'PAID', 'matched', '800000', '2026-11-03T10:00:00.000Z' ),
+	$pay( 'OVER', 'overpaid', '1050000', '2026-11-03T10:01:00.000Z' ),
+	$pay( 'WRONG', 'wrong_token', '5', '2026-11-03T10:03:00.000Z', array( 'tokenAddress' => 'keeta_other' ) ),
+	$pay( 'LATE', 'late', '800000', '2026-11-03T10:04:00.000Z' ),
+	$pay( 'ELSE', 'duplicate', '1', '2026-11-03T10:05:00.000Z', array( 'sessionId' => 'cs_someone_else' ) ),
+);
+$refunds = array(
+	array(
+		'id'                    => 'rf_1',
+		'paymentBlockHash'      => 'LATE',
+		'paymentOperationIndex' => 0,
+		'status'                => 'published',
+		'amount'                => '800000',
+		'amountDecimal'         => '0.8',
+		'tokenTicker'           => '$USDC',
+		'explorerUrl'           => 'https://explorer.test.keeta.com/block/RB1',
+		'lastError'             => null,
+	),
+);
+
+$rows = Keeta_Checkout_Refund_Rows::build( $sessions, $payments, $refunds );
+$by   = array();
+foreach ( $rows as $row ) {
+	$by[ $row['block_hash'] ] = $row;
+}
+
+$t->same( 'rows: another order\'s payment is left out', false, isset( $by['ELSE'] ) );
+$t->same( 'rows: oldest first', array( 'PAID', 'OVER', 'DUP', 'WRONG', 'LATE' ), array_column( $rows, 'block_hash' ) );
+$t->same( 'rows: amounts in the token\'s units', '0.8 USDC', $by['DUP']['amount_label'] );
+$t->same( 'rows: the payment that paid the order has no button', null, $by['PAID']['action'] );
+$t->same( 'rows: ...and says why', 'paid', $by['PAID']['blocked'] );
+$t->same( 'rows: a duplicate is refunded in full', array( 'kind' => 'full', 'amount_label' => '0.8 USDC' ), $by['DUP']['action'] );
+$t->same( 'rows: an overpayment only by its excess', array( 'kind' => 'excess', 'amount_label' => '0.25 USDC' ), $by['OVER']['action'] );
+$t->same( 'rows: another token gets no button', null, $by['WRONG']['action'] );
+$t->same( 'rows: ...and no amount it cannot vouch for', null, $by['WRONG']['amount_label'] );
+$t->same( 'rows: ...but says to return it by hand', 'other_token', $by['WRONG']['blocked'] );
+$t->same( 'rows: a refunded payment shows the refund, not a button', null, $by['LATE']['action'] );
+$t->same( 'rows: ...with its state', 'published', $by['LATE']['refund']['status'] );
+$t->same( 'rows: ...and what went back', '0.8 USDC', $by['LATE']['refund']['amount_label'] );
+$t->same( 'rows: nothing pending when the only refund is done', false, Keeta_Checkout_Refund_Rows::has_pending( $rows ) );
+$t->same( 'rows: the network comes from the session', 'test', Keeta_Checkout_Refund_Rows::network( $sessions ) );
+
+$t->same( 'find: a payment with a button is actionable', 'DUP', Keeta_Checkout_Refund_Rows::find_actionable( $rows, 'DUP', 0 )['block_hash'] ?? null );
+$t->same( 'find: the paid one is not', null, Keeta_Checkout_Refund_Rows::find_actionable( $rows, 'PAID', 0 ) );
+$t->same( 'find: an already refunded one is not', null, Keeta_Checkout_Refund_Rows::find_actionable( $rows, 'LATE', 0 ) );
+$t->same( 'find: another order\'s is not', null, Keeta_Checkout_Refund_Rows::find_actionable( $rows, 'ELSE', 0 ) );
+$t->same( 'find: the wrong operation is not', null, Keeta_Checkout_Refund_Rows::find_actionable( $rows, 'DUP', 1 ) );
+
+$requested = Keeta_Checkout_Refund_Rows::build(
+	$sessions,
+	array( $pay( 'DUP', 'duplicate', '800000', '2026-11-03T10:02:00.000Z' ) ),
+	array( array( 'paymentBlockHash' => 'DUP', 'paymentOperationIndex' => 0, 'status' => 'requested', 'amount' => '800000' ) )
+);
+$t->same( 'rows: a requested refund keeps the panel checking', true, Keeta_Checkout_Refund_Rows::has_pending( $requested ) );
+$t->same( 'rows: a refund without a decimal from the server is worded from the session', '0.8 USDC', $requested[0]['refund']['amount_label'] );
+
+$no_excess = Keeta_Checkout_Refund_Rows::build(
+	array( 'cs_1' => array_merge( $sessions['cs_1'], array( 'overpaidBy' => null ) ) ),
+	array( $pay( 'OVER', 'overpaid', '1050000', '2026-11-03T10:01:00.000Z' ) ),
+	array()
+);
+$t->same( 'rows: an overpayment with no recorded excess gets no button', null, $no_excess[0]['action'] );
 
 exit( $t->report() );

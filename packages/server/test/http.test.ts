@@ -2,6 +2,7 @@ import { once } from 'node:events';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
+import { formatBaseUnits } from '../src/amounts.ts';
 import { createApp, type CheckoutApp } from '../src/http/app.ts';
 import { CheckoutService } from '../src/sessions/service.ts';
 import { MemorySessionStore } from '../src/sessions/store.ts';
@@ -500,6 +501,10 @@ describe('GET /api/payments', () => {
       blockHash: null
     });
     expect(made.body.id).toMatch(/^rf_/);
+    // Placed on its order, and readable without knowing the token's decimals.
+    expect(made.body.orderId).toBe(session.orderId);
+    expect(made.body.tokenTicker).toBe(session.tokenTicker);
+    expect(made.body.amountDecimal).toBe(formatBaseUnits(1n, session.tokenDecimals));
 
     // A second request for the same payment returns the same row, with 200.
     const again = await server().post('/api/payments/RB1/refund').set(auth).send({});

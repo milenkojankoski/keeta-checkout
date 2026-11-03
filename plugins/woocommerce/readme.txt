@@ -105,3 +105,7 @@ to act as a payment method.
 * Orders stay pending while awaiting payment, so the pay page's cancel button works.
 * A payment whose amount no longer matches the order total puts the order on hold
   for review instead of completing it; a second payment on a paid order is noted.
+* A Keeta panel on each order: every Keeta payment it received, what each one was,
+  and a button to refund a second payment, a short or late one, or the excess of an
+  overpayment. Needs the checkout server's refund process (`refunds serve`).
+* Refund events from the checkout server become order notes.

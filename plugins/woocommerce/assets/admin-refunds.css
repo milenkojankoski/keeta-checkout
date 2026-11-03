@@ -1,0 +1,300 @@
+/**
+ * The Keeta panel on a WooCommerce order.
+ *
+ * The palette is the hosted pay page's, so a merchant sees the same Keeta in their
+ * admin as their shoppers see when they pay. Everything is scoped under
+ * `.keeta-refunds` and the panel's own box id, so nothing leaks into wp-admin.
+ */
+
+#keeta-checkout-payments .inside {
+	margin: 0;
+	padding: 0;
+}
+
+.keeta-refunds {
+	--k-ink: #11161c;
+	--k-muted: #5b6673;
+	--k-line: #e3e7ec;
+	--k-soft: #f6f7f9;
+	--k-accent: #1c6ef2;
+	--k-accent-hover: #155fd6;
+	--k-accent-ink: #ffffff;
+	--k-ok-bg: #e7f6ec;
+	--k-ok-ink: #0f6b33;
+	--k-warn-bg: #fdf0e3;
+	--k-warn-ink: #8a4b08;
+	--k-bad-bg: #fdecec;
+	--k-bad-ink: #a1261f;
+	--k-info-bg: #e8f0fe;
+	--k-info-ink: #1c4fb8;
+	--k-neutral-bg: #eef0f3;
+	--k-neutral-ink: #3d4651;
+
+	color: var(--k-ink);
+	font-size: 13px;
+	line-height: 1.45;
+}
+
+/* Header: the mark, a title, and the network. */
+.keeta-refunds__head {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--k-line);
+	background: linear-gradient(180deg, #fcfcfd 0%, var(--k-soft) 100%);
+}
+
+.keeta-refunds__mark {
+	display: inline-flex;
+	color: var(--k-ink);
+}
+
+.keeta-refunds__mark svg {
+	display: block;
+	height: 18px;
+	width: auto;
+}
+
+.keeta-refunds__title {
+	font-weight: 600;
+	letter-spacing: 0.01em;
+}
+
+.keeta-refunds__net {
+	margin-left: auto;
+}
+
+/* Rows. */
+.keeta-refunds__body {
+	padding: 0 16px;
+	min-height: 56px;
+}
+
+.keeta-refunds__list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.keeta-refunds__row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 8px 20px;
+	align-items: center;
+	margin: 0;
+	padding: 14px 0;
+	border-bottom: 1px solid var(--k-line);
+}
+
+.keeta-refunds__row:last-child {
+	border-bottom: 0;
+}
+
+.keeta-refunds__info {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+}
+
+.keeta-refunds__main {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 10px;
+}
+
+.keeta-refunds__amount {
+	font-size: 15px;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+}
+
+.keeta-refunds__meta {
+	color: var(--k-muted);
+	font-size: 12px;
+}
+
+.keeta-refunds__meta code {
+	padding: 0;
+	background: none;
+	font-size: 11.5px;
+}
+
+.keeta-refunds__meta a {
+	color: inherit;
+	text-decoration: underline;
+	text-decoration-color: var(--k-line);
+	text-underline-offset: 2px;
+}
+
+.keeta-refunds__meta a:hover {
+	color: var(--k-accent);
+	text-decoration-color: currentColor;
+}
+
+.keeta-refunds__side {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 4px;
+	text-align: right;
+}
+
+.keeta-refunds__detail {
+	max-width: 300px;
+	color: var(--k-muted);
+	font-size: 12px;
+}
+
+a.keeta-refunds__detail {
+	color: var(--k-accent);
+}
+
+/* Pills. */
+.keeta-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 1px 9px 1px 8px;
+	border-radius: 999px;
+	font-size: 11.5px;
+	font-weight: 600;
+	line-height: 19px;
+	white-space: nowrap;
+}
+
+.keeta-pill::before {
+	content: "";
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+}
+
+.keeta-pill--ok { background: var(--k-ok-bg); color: var(--k-ok-ink); }
+.keeta-pill--warn { background: var(--k-warn-bg); color: var(--k-warn-ink); }
+.keeta-pill--bad { background: var(--k-bad-bg); color: var(--k-bad-ink); }
+.keeta-pill--info { background: var(--k-info-bg); color: var(--k-info-ink); }
+.keeta-pill--neutral { background: var(--k-neutral-bg); color: var(--k-neutral-ink); }
+
+/* A refund on its way pulses, gently. */
+.keeta-pill--info::before {
+	animation: keeta-pulse 1.4s ease-in-out infinite;
+}
+
+/* The button. */
+.keeta-refunds__btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 7px 14px 7px 12px;
+	border: 0;
+	border-radius: 8px;
+	background: var(--k-accent);
+	color: var(--k-accent-ink);
+	font: inherit;
+	font-weight: 600;
+	line-height: 18px;
+	white-space: nowrap;
+	cursor: pointer;
+	box-shadow: 0 1px 2px rgba(17, 22, 28, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+	transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+}
+
+.keeta-refunds__btn:hover {
+	background: var(--k-accent-hover);
+	box-shadow: 0 2px 6px rgba(28, 110, 242, 0.28);
+}
+
+.keeta-refunds__btn:active {
+	transform: translateY(1px);
+}
+
+.keeta-refunds__btn:focus-visible {
+	outline: 2px solid var(--k-accent);
+	outline-offset: 2px;
+}
+
+.keeta-refunds__btn svg {
+	display: block;
+	flex: none;
+	height: 11px;
+	width: auto;
+}
+
+.keeta-refunds__btn[disabled] {
+	cursor: progress;
+	opacity: 0.65;
+	box-shadow: none;
+}
+
+/* Messages. */
+.keeta-refunds__notice {
+	margin: 0;
+	padding: 18px 0;
+	color: var(--k-muted);
+}
+
+.keeta-refunds__notice--bad {
+	color: var(--k-bad-ink);
+}
+
+.keeta-refunds__foot {
+	margin: 0;
+	padding: 10px 16px 12px;
+	border-top: 1px solid var(--k-line);
+	background: var(--k-soft);
+	color: var(--k-muted);
+	font-size: 12px;
+}
+
+/* Loading. */
+.keeta-refunds__row--loading {
+	gap: 8px;
+}
+
+.keeta-skeleton {
+	display: block;
+	height: 10px;
+	width: 140px;
+	border-radius: 5px;
+	background: linear-gradient(90deg, var(--k-line) 0%, var(--k-soft) 50%, var(--k-line) 100%);
+	background-size: 200% 100%;
+	animation: keeta-shimmer 1.3s ease-in-out infinite;
+}
+
+.keeta-skeleton--wide {
+	width: 220px;
+	height: 14px;
+}
+
+@keyframes keeta-shimmer {
+	from { background-position: 100% 0; }
+	to { background-position: -100% 0; }
+}
+
+@keyframes keeta-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.keeta-skeleton,
+	.keeta-pill--info::before {
+		animation: none;
+	}
+}
+
+/* Narrow screens: everything in one column. */
+@media screen and (max-width: 782px) {
+	.keeta-refunds__row {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.keeta-refunds__side {
+		align-items: flex-start;
+		text-align: left;
+	}
+}

@@ -631,6 +631,21 @@ describe.each(implementations)('%s payments ledger and meta', (_name, makeStore)
     await expect(s.recordRefundResult('rf_nope', { status: 'failed', at: BASE_TIME })).rejects.toMatchObject({ code: 'REFUND_NOT_FOUND' });
   });
 
+  it('takes back the attempt a claim counted when nothing was sent', async () => {
+    const s = open();
+    await s.createRefund(refundRequest({ id: 'rf_a', paymentBlockHash: 'B1' }));
+    await s.claimNextRefund(BASE_TIME + 1);
+    const held = await s.recordRefundResult('rf_a', { status: 'requested', at: BASE_TIME + 2, notAttempted: true });
+    expect(held.attempts).toBe(0);
+    expect(held.attemptStartedAt).toBeNull();
+    expect((await s.getRefund('rf_a'))?.attempts).toBe(0);
+
+    await s.claimNextRefund(BASE_TIME + 3);
+    const refused = await s.recordRefundResult('rf_a', { status: 'refused', at: BASE_TIME + 4, lastError: 'over the cap', notAttempted: true });
+    expect(refused.attempts).toBe(0);
+    expect((await s.getRefund('rf_a'))?.attempts).toBe(0);
+  });
+
   it('sums what went out, counting money in flight, per token, since a time', async () => {
     const s = open();
     await s.createRefund(refundRequest({ id: 'rf_a', paymentBlockHash: 'B1', amount: 100n }));
