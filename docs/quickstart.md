@@ -149,6 +149,42 @@ unreferenced, or in the wrong token. Nothing changes a session's status in those
 cases, so without it that money sits unnoticed. `GET /api/payments` lists it all
 with a `refundable` flag.
 
+## 8. Refund a payment
+
+Refunds are their own process, because they are the one part that signs. The
+checkout server stays watch-only; a separate `keeta-checkout refunds serve` holds a
+key that can spend a small float and nothing else.
+
+Set it up once, on your own machine, with the seed of the account that holds the
+float. The seed goes in the environment, never on a flag:
+
+```bash
+KEETA_CHECKOUT_REFUND_OWNER_SEED=... keeta-checkout refunds init --token $USDC
+```
+
+It creates a vault and a dedicated signer, delegates the signer to spend only that
+one token from only that vault, checks the permissions came out exactly right, and
+prints three variables plus two addresses to fund. Put the variables in the same
+`.env` the server reads, put the signer seed in your secret store, then fund the
+vault with your refund float and the signer with a little KTA for fees.
+
+Run the process next to the server, over the same database:
+
+```bash
+keeta-checkout refunds serve
+```
+
+It refunds duplicate payments automatically, because a shopper who paid twice has no
+reason to wait. Underpaid and late payments are refunded only when you ask, with
+`POST /api/payments/<blockHash>/refund`, because you may have fulfilled the order
+anyway. `GET /api/refunds` lists what has gone out. Change the automatic set with
+`KEETA_CHECKOUT_REFUND_AUTO` (comma-separated, or empty for none).
+
+A refund can only ever go back to the payer, in the token they paid, for at most
+what they paid: there is no way to send an arbitrary amount anywhere through this.
+To stop refunds instantly, revoke the delegation from your wallet; the float and the
+signer's KTA are the most that is ever at risk.
+
 ## What to know before the main network
 
 - **Tokens a shopper cannot pay with are refused.** On main, Bivo's original fiat
@@ -158,9 +194,10 @@ with a `refundable` flag.
 - **`$KBUSD` and the other `$KB` stablecoins are open at the ledger** but need Bivo
   KYC to acquire, so almost no shopper holds one. They suit invoicing between two
   onboarded businesses, not a public shop.
-- **There are no refunds yet.** Send money back by hand from your wallet until the
-  refunds process lands. `GET /api/payments?disposition=underpaid,late,duplicate`
-  tells you what to send and to whom.
+- **Keep the refund float small.** It is the most a leaked signer key could move.
+  Top it up as it runs down rather than pre-funding months of refunds, and keep the
+  signer's KTA to a few fees' worth. See section 8.
+- **One refund process per database**, like the watcher and the dispatcher.
 - **Back up the database.** It is the record of which orders were paid.
 - **One server per database.** The watcher and the webhook dispatcher each expect to
   be the only one of their kind.

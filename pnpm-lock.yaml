@@ -75,6 +75,9 @@ importers:
         specifier: ^1.5.4
         version: 1.5.4
     devDependencies:
+      '@keeta-checkout/refunds':
+        specifier: workspace:*
+        version: link:../refunds
       '@keeta-checkout/server':
         specifier: workspace:*
         version: link:../server

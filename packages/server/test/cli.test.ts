@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCheck } from '../../cli/src/check.ts';
 import { main } from '../../cli/src/index.ts';
 import { runInit } from '../../cli/src/init.ts';
+import { runRefunds, runRefundsInit, startRefundsServe } from '../../cli/src/refunds.ts';
 import { parseArgs } from '../../cli/src/options.ts';
 import { describeRuntime, startRuntime, type Runtime } from '../../cli/src/runtime.ts';
 import { resolveConfig } from '../src/config.ts';
@@ -211,6 +212,61 @@ describe('init', () => {
     );
     expect(code).toBe(0);
     expect(readFileSync(join(directory, '.env'), 'utf8')).toContain(MERCHANT_ADDRESS);
+  });
+});
+
+describe('refunds (no network)', () => {
+  it('routes an unknown refunds subcommand', async () => {
+    expect(await runRefunds(parseArgs(['refunds', 'frobnicate']), {}, io)).toBe(1);
+    expect(lines.join('\n')).toContain('refunds init');
+  });
+
+  it('refuses init without the owner seed, and says to keep it off the command line', async () => {
+    const code = await runRefundsInit(parseArgs(['refunds', 'init', '--token', '$USDC']), { KEETA_NETWORK: 'test' }, io);
+    expect(code).toBe(1);
+    expect(lines.join('\n')).toContain('KEETA_CHECKOUT_REFUND_OWNER_SEED');
+    expect(lines.join('\n')).toContain('shell history');
+  });
+
+  it('refuses init without a token', async () => {
+    const code = await runRefundsInit(parseArgs(['refunds', 'init']), { KEETA_NETWORK: 'test', KEETA_CHECKOUT_REFUND_OWNER_SEED: 'seed' }, io);
+    expect(code).toBe(1);
+    expect(lines.join('\n')).toContain('--token');
+  });
+
+  it('refuses serve when the checkout configuration itself is unusable', async () => {
+    const result = await startRefundsServe({}, parseArgs(['refunds', 'serve']), io);
+    expect(result).toBe(1);
+    expect(lines.join('\n')).toContain('not usable');
+  });
+
+  it('refuses serve when the refund variables are not set', async () => {
+    const result = await startRefundsServe(
+      { KEETA_NETWORK: 'test', KEETA_CHECKOUT_RECEIVING_ADDRESS: MERCHANT_ADDRESS, KEETA_CHECKOUT_API_KEYS: 'k'.repeat(20) },
+      parseArgs(['refunds', 'serve']),
+      io
+    );
+    expect(result).toBe(1);
+    expect(lines.join('\n')).toContain('refunds init');
+    expect(lines.join('\n')).toContain('KEETA_CHECKOUT_REFUND_VAULT');
+  });
+
+  it('rejects a non-numeric limit', async () => {
+    const result = await startRefundsServe(
+      {
+        KEETA_NETWORK: 'test',
+        KEETA_CHECKOUT_RECEIVING_ADDRESS: MERCHANT_ADDRESS,
+        KEETA_CHECKOUT_API_KEYS: 'k'.repeat(20),
+        KEETA_CHECKOUT_REFUND_VAULT: MERCHANT_ADDRESS,
+        KEETA_CHECKOUT_REFUND_TOKEN: USDC,
+        KEETA_CHECKOUT_REFUND_SIGNER_SEED: 'seed',
+        KEETA_CHECKOUT_REFUND_MAX_PER_REFUND: 'lots'
+      },
+      parseArgs(['refunds', 'serve']),
+      io
+    );
+    expect(result).toBe(1);
+    expect(lines.join('\n')).toContain('KEETA_CHECKOUT_REFUND_MAX_PER_REFUND');
   });
 });
 

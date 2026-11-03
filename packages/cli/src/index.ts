@@ -17,6 +17,7 @@ import { runCheck } from './check.ts';
 import { runInit, terminalAsker } from './init.ts';
 import { flagBoolean, flagNumber, flagString, parseArgs, resolveValue, type ParsedArgs } from './options.ts';
 import { describeRuntime, startRuntime } from './runtime.ts';
+import { runRefunds } from './refunds.ts';
 
 const USAGE = `keeta-checkout — accept Keeta payments on your website
 
@@ -24,6 +25,8 @@ Usage:
   keeta-checkout init [options]     Write a configuration file and generate secrets
   keeta-checkout check             Validate the configuration against the network
   keeta-checkout serve [options]   Start the checkout server
+  keeta-checkout refunds init      Create the refund vault and signer (uses your seed)
+  keeta-checkout refunds serve     Run the refund process (holds only the signer key)
 
 Options for init:
   --out <path>                 Where to write the configuration (default: .env)
@@ -81,6 +84,11 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
 
     case 'serve':
       return runServe(args, env, log);
+
+    case 'refunds':
+      // `refunds serve` reads the shared .env; `refunds init` does not need it.
+      if (args.positionals[0] === 'serve') loadEnvFile(args, env, log);
+      return runRefunds(args, env, { log });
 
     default:
       process.stderr.write(`Unknown command ${JSON.stringify(args.command)}.\n\n${USAGE}`);
@@ -170,6 +178,7 @@ async function runServe(args: ParsedArgs, env: NodeJS.ProcessEnv, log: (line: st
 export { startRuntime, describeRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 export { runCheck, type CheckResult } from './check.ts';
 export { runInit } from './init.ts';
+export { runRefunds, runRefundsInit, startRefundsServe } from './refunds.ts';
 export { parseArgs } from './options.ts';
 
 /**

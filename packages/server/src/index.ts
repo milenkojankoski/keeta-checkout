@@ -144,6 +144,8 @@ export {
   REQUEST_TIMEOUT_MS,
   RETRY_SCHEDULE_MS,
   WebhookDispatcher,
+  enqueueRefundChange,
+  enqueueWebhookEvent,
   type WebhookDispatcherOptions
 } from './webhooks/dispatcher.ts';
 
